@@ -52,7 +52,7 @@ def calculate_subzone(latitudes, longitudes, geo_df, attrb_name="zone_id"):
 
     # assert self.subzone_df is not None, "subzone file not provided"
     subzone_array = np.empty(len(longitudes), dtype="object")
-    subzone_array[:] = np.NaN
+    subzone_array[:] = np.nan
 
     for _, row in geo_df.iterrows():
         mask = shapely_contains(row.geometry, longitudes, latitudes)
@@ -89,13 +89,15 @@ def prepare_trip_data_for_time_groups(day_df, nodes_df, edges_df, freq_min):
     time_group_trips["time_group"] = (time_group_trips.rq_time / freq).astype(int)
     time_group_trips["time"] = time_group_trips["time_group"] * freq_min
     time_group_trips = time_group_trips[time_group_trips["start"] != time_group_trips["end"]]
-    origin_dest_trips = time_group_trips.groupby(["time_group", "start", "end"]).mean()[["trip_duration", "trip_distance"]]
+    if "trip_distance" in time_group_trips.columns:
+        origin_dest_trips = time_group_trips.groupby(["time_group", "start", "end"]).mean()[["trip_duration", "trip_distance"]]
+        origin_dest_trips["trip_distance_min"] = time_group_trips.groupby(["time_group", "start", "end"]).min()["trip_distance"]
+        origin_dest_trips["trip_distance_max"] = time_group_trips.groupby(["time_group", "start", "end"]).max()["trip_distance"]
+    else:
+        origin_dest_trips = time_group_trips.groupby(["time_group", "start", "end"]).mean()[["trip_duration"]]
     origin_dest_trips["trips_counts"] = time_group_trips.groupby(["time_group", "start", "end"]).count()["trip_duration"]
     origin_dest_trips["trip_duration_min"] = time_group_trips.groupby(["time_group", "start", "end"]).min()["trip_duration"]
     origin_dest_trips["trip_duration_max"] = time_group_trips.groupby(["time_group", "start", "end"]).max()["trip_duration"]
-
-    origin_dest_trips["trip_distance_min"] = time_group_trips.groupby(["time_group", "start", "end"]).min()["trip_distance"]
-    origin_dest_trips["trip_distance_max"] = time_group_trips.groupby(["time_group", "start", "end"]).max()["trip_distance"]
     origin_dest_trips[origin_dest_trips.trips_counts != 1].head()
 
     unique_edges_dict = {}
@@ -193,8 +195,8 @@ def solve_network_optimization(edges_df, trips_df, objectives, unique_edges, zon
         trips_df[f"network_time ({objective})"] = [round(x.getValue(), 2) for x in scaled_travel_times]
         trips_df[f"error ({objective})"] = [round(x.getValue(), 2) for x in scalled_error]
 
-        edges_df_with_factor[f"scale_factor {objective}"] = np.NaN
-        edges_df_with_factor[f"scaled_speed_kph {objective}"] = np.NaN
+        edges_df_with_factor[f"scale_factor {objective}"] = np.nan
+        edges_df_with_factor[f"scaled_speed_kph {objective}"] = np.nan
         for edge in var_dict:
             mask = (edges_df_with_factor.from_node == edge[0]) & (edges_df_with_factor.to_node == edge[1])
             edges_df_with_factor.loc[mask, f"scale_factor {objective}"] = var_dict[edge].X
@@ -244,27 +246,48 @@ def solve_network_optimization(edges_df, trips_df, objectives, unique_edges, zon
     return e_df.reset_index(), trips_df, zones_with_mean_factor_scaling, multizone_with_mean_factor_scaling
 
 
-def generate_scaled_dyn_edges(network_name, demand, demand_file_name, zones_name, aggregation_period_min, objective):
+def generate_scaled_dyn_edges(network_name, demand, demand_file_name, zones_name, aggregation_period_min, objective,
+                              crs=None):
     """ Generates the scaled edges for the given network and demand data. The edges are scaled based on the historical
     travel times from the demand data. The scaled edges are saved in the individual folders for each time group
     according to the aggregation period.
+    The code assumes WGS84 (EPSG:4326) as the default CRS for the input data. If the input data is in a different CRS,
+    it should be provided as an argument to the function.
     """
 
     # Set the folders
-    data_folder = Path().absolute().parents[2].joinpath("data")
+    data_folder = Path(__file__).resolve().absolute().parents[3].joinpath("data")
+    zone_main_folder = data_folder.joinpath(f"zones/{zones_name}")
     zone_folder = data_folder.joinpath(f"zones/{zones_name}/{network_name}")
     network_folder = data_folder.joinpath(f"networks//{network_name}")
 
     # ***********************************************************************************************
 
+    if crs is None:
+        print("No CRS provided. Assuming the input data is in WGS84 (EPSG:4326). If the input data is in a different CRS, please provide the correct CRS as an argument to the function.")
+        crs = 4326
+
     # Load zones and calculate valid neighbours
-    zones = zone_folder.joinpath("full_zone_info.geojson")
+    zones = zone_main_folder.joinpath("polygon_definition.geojson")
     zones = gpd.read_file(str(zones))
+    if zones.crs != crs:
+        print(f"Zone crs will be overwritten {zones.crs} with the provided crs: {crs}. "
+              f"Please double-check the consistency of the input data!")
+        zones.set_crs(crs, inplace=True, allow_override=True)
 
     # Read edges and nodes
-    nodes_df = gpd.read_file(network_folder.joinpath("base\\nodes_all_infos.geojson"))
+    nodes_df = gpd.read_file(network_folder.joinpath("base/nodes_all_infos.geojson"))
+    if nodes_df.crs != crs:
+        print(f"Node crs will be overwritten {nodes_df.crs} with the provided crs: {crs}. "
+              f"Please double-check the consistency of the input data!")
+        nodes_df.set_crs(crs, inplace=True, allow_override=True)
     nodes_df["zone_id"] = calculate_subzone(nodes_df.geometry.y, nodes_df.geometry.x, zones, "zone_id")
-    edges_df = gpd.read_file(network_folder.joinpath("base\\edges_all_infos.geojson"))
+    edges_df = gpd.read_file(network_folder.joinpath("base/edges_all_infos.geojson"))
+    if edges_df.crs != crs:
+        print(f"Edge crs will be overwritten {edges_df.crs} with the provided crs: {crs}. "
+              f"Please double-check the consistency of the input data!")
+        edges_df.set_crs(crs, inplace=True, allow_override=True)
+
     edges_df["from_zone"] = nodes_df.loc[edges_df.from_node.values]["zone_id"].values
     edges_df["to_zone"] = nodes_df.loc[edges_df.to_node.values]["zone_id"].values
     edges_df = calculate_zone_intersect_edges(edges_df, zones)
@@ -277,19 +300,20 @@ def generate_scaled_dyn_edges(network_name, demand, demand_file_name, zones_name
     multi_zone_edges = edges_df[edges_df.is_multiple_zones == True].set_index(["from_node", "to_node"]).zones.to_dict()
 
     # Plot zones and edges to check the data
+    # TODO: check why this is not working
     plot_zones_edges(zones, edges_df)
 
     # Read Demand and make groups based on the aggregation period
-    day_df = pd.read_csv(data_folder.joinpath(f"demand\\{demand}\\matched\\{network_name}\\{demand_file_name}.csv"))
+    day_df = pd.read_csv(data_folder.joinpath(f"demand/{demand}/matched/{network_name}/{demand_file_name}.csv"))
     day_df["trip_duration"] = day_df["dropoff_time"] - day_df["rq_time"]
     day_df.loc[day_df.trip_duration < 0, "trip_duration"] = day_df["dropoff_time"] + 24*60*60 - day_df["rq_time"]
     origin_dest_trips, unique_edge_dict = prepare_trip_data_for_time_groups(day_df, nodes_df, edges_df, aggregation_period_min)
 
 
     # Solve the optimization problem
-    scaled_folder_rel_path = f"scaled_edges\\{objective}_{int(aggregation_period_min)}\\{demand_file_name}"
+    scaled_folder_rel_path = f"scaled_edges/{objective}_{int(aggregation_period_min)}/{demand_file_name}"
     scale_edges_main_folder = network_folder.joinpath(scaled_folder_rel_path)
-    scale_demand_folder = network_folder.joinpath(f"scaled_demand\\period_{int(aggregation_period_min)}\\{demand_file_name}")
+    scale_demand_folder = network_folder.joinpath(f"scaled_demand/period_{int(aggregation_period_min)}/{demand_file_name}")
 
     for f in [scale_demand_folder, scale_edges_main_folder]:
         if f.exists() is False:
@@ -300,27 +324,30 @@ def generate_scaled_dyn_edges(network_name, demand, demand_file_name, zones_name
     dyn_factor_files = {"simulation_time": [], "travel_time_folder": []}
 
     for time_group in tqdm(range(0, max_time_group)):
-        edges_df_with_factor, trip_df, zone_edge_with_mean, multi_zone_edge_with_mean = solve_network_optimization(
-            edges_df,
-            origin_dest_trips.loc[time_group, :, :].reset_index(),
-            [objective], unique_edge_dict[time_group],
-            zone_edges_dict, multi_zone_edges
-        )
-
-        edges_df_with_factor["edge_tt"] = edges_df_with_factor["travel_time"] * edges_df_with_factor[f"scale_factor {objective}"]
-        edges_df_with_factor = edges_df_with_factor[["from_node", "to_node", "edge_tt"]]
-
         time = int(time_group * aggregation_period_min * 60)
-        edge_folder = scale_edges_main_folder.joinpath(f"{time}")
-        if edge_folder.exists() is False:
-            edge_folder.mkdir(parents=True)
+        try:
+            tmp_od = origin_dest_trips.loc[time_group, :, :].reset_index()
+            edges_df_with_factor, trip_df, zone_edge_with_mean, multi_zone_edge_with_mean = solve_network_optimization(
+                edges_df, tmp_od,[objective], unique_edge_dict[time_group],
+                zone_edges_dict, multi_zone_edges
+            )
 
-        edges_df_with_factor.to_csv(edge_folder.joinpath("edges_td_att.csv"), index=False)
-        dyn_factor_files["simulation_time"].append(time)
-        dyn_factor_files["travel_time_folder"].append(f"{scaled_folder_rel_path}\\{time}")
+            edges_df_with_factor["edge_tt"] = edges_df_with_factor["travel_time"] * edges_df_with_factor[f"scale_factor {objective}"]
+            edges_df_with_factor = edges_df_with_factor[["from_node", "to_node", "edge_tt"]]
 
-        trip_df = trip_df.drop(columns=["path_nodes", "path_edges"])
-        trip_df.to_csv(scale_demand_folder.joinpath(f"{time}.csv"))
+            edge_folder = scale_edges_main_folder.joinpath(f"{time}")
+            if edge_folder.exists() is False:
+                edge_folder.mkdir(parents=True)
+
+            edges_df_with_factor.to_csv(edge_folder.joinpath("edges_td_att.csv"), index=False)
+            dyn_factor_files["simulation_time"].append(time)
+            dyn_factor_files["travel_time_folder"].append(f"{scaled_folder_rel_path}/{time}")
+
+            trip_df = trip_df.drop(columns=["path_nodes", "path_edges"])
+            trip_df.to_csv(scale_demand_folder.joinpath(f"{time}.csv"))
+        except:
+            print(f"Time {time}: Problem when reseting index of OD trips dataframe with dimension:"
+                  f" {origin_dest_trips.shape}. Continueing with next time group.")
 
     dyn_folders_df = pd.DataFrame(dyn_factor_files)
     dyn_file = network_folder.joinpath(f"dyn_factors_{objective}_{aggregation_period_min}.csv")
@@ -342,6 +369,7 @@ if __name__ == "__main__":
     ************    IMPORTANT       ***************
     # For the scaling method to work, the demand data must have an additional column "dropoff_time"  marking the 
     # historical travel time of the trips. 
+    # Moreover, a column "trip_distance" is optional.
     
     **** OUTPUT ****
     
@@ -354,13 +382,13 @@ if __name__ == "__main__":
     """
 
     # ******  Modify the following parameters according to your network and demand data. ******
-    network_name = "manhattan_osm_network_arslan_phd"
-    demand = "manhattan_trips_arslan"
-    demand_file_name = "2016-06-05"
-    zones_name = "manhattan_cell_1000"
+    network_name = "Manhattan_2019_corrected"
+    demand = "manhattan_2018"
+    demand_file_name = "2018-11-11_sample_5_1"
+    zones_name = "Manhattan_Taxi_Zones"
     aggregation_period_min = 30     # The aggregation period given in minutes.
     objective = "abs_factored"    # Other possible objective is "squ_factored"
+    crs_epsg = 32618
 
-    generate_scaled_dyn_edges(network_name, demand, demand_file_name, zones_name, aggregation_period_min, objective)
-
-
+    generate_scaled_dyn_edges(network_name, demand, demand_file_name, zones_name, aggregation_period_min, objective,
+                              crs_epsg)
