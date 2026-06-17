@@ -3,6 +3,7 @@
 # -----------------------------
 import logging
 import os
+import random
 from copy import deepcopy
 from abc import abstractmethod, ABCMeta
 
@@ -280,6 +281,7 @@ class RequestBase(metaclass=ABCMeta):
         """
         declines = [offer_id for offer_id, operator_offer in self.offer.items() if operator_offer.service_declined()]
         if len(declines) == scenario_parameters[G_NR_OPERATORS]:
+            self.chosen_operator_id = -1
             return -1
         return None
 
@@ -315,9 +317,9 @@ INPUT_PARAMETERS_BasicRequest = {
 }
 
 class BasicRequest(RequestBase):
-    """This request only performs a mode choice based on if it recieved an offer or not.
-    if an offer is recieved, it accepts the offer
-    if multiple offers are recieved an error is thrown"""
+    """This request only performs a mode choice based on if it received an offer or not.
+    if an offer is received, it accepts the offer
+    if multiple offers are received an error is thrown"""
     type = "BasicRequest"
 
     def __init__(self, rq_row, routing_engine, simulation_time_step, scenario_parameters):
@@ -325,7 +327,7 @@ class BasicRequest(RequestBase):
 
     def choose_offer(self, sc_parameters, simulation_time):
         test_all_decline = super().choose_offer(sc_parameters, simulation_time)
-        if test_all_decline is not None and test_all_decline < 0:
+        if test_all_decline == -1:
             return -1
         if len(self.offer) == 0:
             return None
@@ -336,7 +338,8 @@ class BasicRequest(RequestBase):
             return None
         elif len(opts) == 1:
             self.fare = self.offer[opts[0]].get(G_OFFER_FARE, 0)
-            return opts[0]
+            self.chosen_operator_id = opts[0]
+            return self.chosen_operator_id
         else:
             LOG.error(f"not implemented {offer_str(self.offer)}")
 
@@ -379,7 +382,7 @@ class IndividualConstraintRequest(RequestBase):
 
     def choose_offer(self, sc_parameters, simulation_time):
         test_all_decline = super().choose_offer(sc_parameters, simulation_time)
-        if test_all_decline is not None and test_all_decline < 0: # all operators declined service
+        if test_all_decline == -1: # all operators declined service
             return -1
         # simple sort by amod operator id
         sorted_amod_offer_ops = sorted([op_id for op_id in self.offer.keys() if op_id >= 0])
@@ -400,7 +403,8 @@ class IndividualConstraintRequest(RequestBase):
                     return -1
                 LOG.debug(f" -> accept")
                 self.fare = self.offer[op].get(G_OFFER_FARE, 0)
-                return op
+                self.chosen_operator_id = op
+                return self.chosen_operator_id
 
 INPUT_PARAMETERS_PriceSensitiveIndividualConstraintRequest = {
     "doc" : """This request class can be used to communicate earliest and latest pick-up time to the operators.
@@ -441,7 +445,6 @@ class PriceSensitiveIndividualConstraintRequest(IndividualConstraintRequest):
                 offered_pu_t = self.rq_time + self.offer[op][G_OFFER_WAIT]
                 if offered_pu_t < self.earliest_start_time:
                     LOG.debug(f" -> decline. too early pick-up {offered_pu_t} < {self.earliest_start_time}")
-
                     return -1
                 if offered_pu_t > self.latest_start_time:
                     LOG.debug(f" -> decline. too late pick-up {offered_pu_t} > {self.latest_start_time}")
@@ -451,7 +454,8 @@ class PriceSensitiveIndividualConstraintRequest(IndividualConstraintRequest):
                     return -1
                 LOG.debug(f" -> accept")
                 self.fare = self.offer[op].get(G_OFFER_FARE, 0)
-                return op
+                self.chosen_operator_id = op
+                return self.chosen_operator_id
 # -------------------------------------------------------------------------------------------------------------------- #
 
 INPUT_PARAMETERS_WaitingTimeSensitiveLinearDeclineRequest = {
@@ -483,7 +487,7 @@ class WaitingTimeSensitiveLinearDeclineRequest(RequestBase):
     def choose_offer(self, sc_parameters, simulation_time):
         LOG.debug("choose offer {}".format(offer_str(self.offer)))
         test_all_decline = super().choose_offer(sc_parameters, simulation_time)
-        if test_all_decline is not None and test_all_decline < 0:
+        if test_all_decline == -1:
             return -1
         if len(self.offer) == 0:
             return None
@@ -496,7 +500,8 @@ class WaitingTimeSensitiveLinearDeclineRequest(RequestBase):
             if wt <= self.max_wt_1:
                 LOG.debug(f" -> accept {wt} <= {self.max_wt_1}")
                 self.fare = self.offer[op].get(G_OFFER_FARE, 0)
-                return op
+                self.chosen_operator_id = op
+                return self.chosen_operator_id
             elif wt > self.max_wt_2:
                 LOG.debug(f" -> decline. too long?? {wt} > {self.max_wt_2}")
                 return -1
@@ -508,7 +513,8 @@ class WaitingTimeSensitiveLinearDeclineRequest(RequestBase):
                 if r < acc_prob:
                     LOG.debug(f" -> accept")
                     self.fare = self.offer[op].get(G_OFFER_FARE, 0)
-                    return op
+                    self.chosen_operator_id = op
+                    return self.chosen_operator_id
                 else:
                     LOG.debug(f" -> decline")
                     return -1
@@ -551,7 +557,8 @@ class PreferredOperatorRequest(RequestBase):
         list_options = [i for i, off in self.offer.items() if not off.service_declined()]
         if self.preferred_operator in list_options:
             self.fare = self.offer[self.preferred_operator].get(G_OFFER_FARE, 0)
-            return self.preferred_operator
+            self.chosen_operator_id = self.preferred_operator
+            return self.chosen_operator_id
         else:
             return None
 
@@ -588,7 +595,8 @@ class BrokerDecisionRequest(RequestBase):
                 break
         if selected_offer is not None:
             self.fare = selected_offer.get(G_OFFER_FARE, 0)
-        return selected_op
+        self.chosen_operator_id = selected_op
+        return self.chosen_operator_id
 
 INPUT_PARAMETERS_UserDecisionRequest = {
     "doc" :     """This request class chooses the offer with the lowest overall travel time
@@ -626,7 +634,8 @@ class UserDecisionRequest(RequestBase):
                         selected_op = op_id
         if selected_offer is not None:
             self.fare = selected_offer.get(G_OFFER_FARE, 0)
-        return selected_op
+        self.chosen_operator_id = selected_op
+        return self.chosen_operator_id
 
 
 INPUT_PARAMETERS_UserUtilityRequest = {
@@ -668,7 +677,182 @@ class UserUtilityRequest(RequestBase):
         if selected_op is not None:
             chosen_offer = self.offer[selected_op]
             self.fare = chosen_offer.get(G_OFFER_FARE, 0)
+        self.chosen_operator_id = selected_op
+        return self.chosen_operator_id
+
+# ---------------------------------------------------------------------------
+# New Request: PTUtilityRequest
+# ---------------------------------------------------------------------------
+
+INPUT_PARAMETERS_PTUtilityRequest = {
+    "doc": "Compute a simple PT utility from GTFS total duration: U0 - alpha * gtfs_total_duration_min",
+    "inherit": "RequestBase",
+    "input_parameters_mandatory": ["U_0_T", "alpha_t_P"],  # scenario parameters for PT utility calculation
+    "input_parameters_optional": [],
+    "mandatory_modules": [],
+    "optional_modules": []
+}
+
+class PTUtilityRequest(RequestBase):
+    """Request that pre-computes a public transport (PT) utility for the request and uses max utility model to choose
+    between PT and MOD.
+
+    The demand files have to have a column ''
+    """
+    type = "PTUtilityRequest"
+
+    def __init__(self, rq_row, routing_engine, simulation_time_step, scenario_parameters):
+        super().__init__(rq_row, routing_engine, simulation_time_step, scenario_parameters)
+        # Read GTFS total duration (in minutes) from the request row; support missing value
+        gtfs_dur = rq_row.get('gtfs_total_duration_min', None)
+        if gtfs_dur is None:
+            raise KeyError(f"Missing data column 'gtfs_total_duration_min' in request file!")
+
+        # Scenario parameter keys: try a few reasonable names, but require them to be present (no defaults)
+        # U0: base PT utility
+        U0 = None
+        U0_keys = ['U_0_T']
+        for key in U0_keys:
+            if key in scenario_parameters:
+                U0 = scenario_parameters.get(key)
+                break
+        if U0 is None:
+            raise KeyError(
+                f"Missing required scenario parameter for PT base utility. One of {U0_keys} must be set in your scenario configuration (e.g. 'pt_u0' or 'U_0_T').")
+
+        # alpha: per-minute penalty for PT travel time
+        alpha_t_p = None
+        alpha_keys = ['alpha_t_P']
+        for key in alpha_keys:
+            if key in scenario_parameters:
+                alpha_t_p = scenario_parameters.get(key)
+                break
+        if alpha_t_p is None:
+            raise KeyError(
+                f"Missing required scenario parameter for PT time penalty. One of {alpha_keys} must be set in your scenario configuration (e.g. 'pt_alpha_t' or 'alpha_t_P').")
+
+        self.highest_mod_utility = float("-inf")
+        # compute PT utility
+        self.pt_utility: float = float(U0) - float(alpha_t_p) * float(gtfs_dur)
+
+
+        # set MOD sensitivity coefficients (considering units: in config per min, from FleetPy in seconds)
+        self.alpha_t_d: float = scenario_parameters["alpha_t_D"] / 60
+        self.alpha_t_w: float = scenario_parameters["alpha_t_W"] / 60
+        self.fare_conversion: float = 1/100 # convert fare from cents to euros for utility calculation
+
+    def choose_offer(self, scenario_parameters, simulation_time):
+        """Use a max utility model to choose between MOD providers and PT"""
+        selected_op = -1
+        highest_utility = self.pt_utility
+        for op_id, offer in self.offer.items():
+            if not offer.service_declined():
+                t_wait = offer[G_OFFER_WAIT]
+                t_drive = offer[G_OFFER_DRIVE]
+                fare = offer.get(G_OFFER_FARE, 0)
+                utility = - self.alpha_t_w * t_wait - self.alpha_t_d * t_drive - self.fare_conversion * fare
+                if utility > highest_utility:
+                    highest_utility = utility
+                    selected_op = op_id
+                if utility > self.highest_mod_utility:
+                    self.highest_mod_utility = utility
+        if selected_op == -1:
+            self.fare = 0
+        else:
+            chosen_offer = self.offer[selected_op]
+            self.fare = chosen_offer.get(G_OFFER_FARE, 0)
         return selected_op
+
+    # Optionally override record_data to include the PT utility in output
+    def _add_record(self, record_dict):
+        record_dict['pt_utility'] = self.pt_utility
+        record_dict['highest_mod_utility'] = self.highest_mod_utility
+
+# ---------------------------------------------------------------------------
+# New Request: MultinomialLogitRequest
+# ---------------------------------------------------------------------------
+
+INPUT_PARAMETERS_MultinomialLogitRequest = {
+    "doc": "Uses a multinomial logit model to determine the selected choice. Can include AMOD, PT, PV, BIKE, WALK",
+    "inherit": "RequestBase",
+    "input_parameters_mandatory": [G_MC_U0_PV, G_MC_VOT, G_WALKING_SPEED],  # TODO # coefficients for mode choice
+    "input_parameters_optional": [G_MC_LOG_DISP_FACTOR, G_MC_U0_BIKE, G_BIKING_SPEED], # TODO # add PT
+    "mandatory_modules": [],
+    "optional_modules": []
+}
+
+
+class MultinomialLogitRequest(RequestBase):
+    """Request that uses a multinomial logit model to choose between alternatives.
+
+    The demand files can have columns for agent-specific coefficients,
+    or can fall back to scenario-specific coefficients.
+    """
+    type = "MultinomialLogitRequest"
+
+    def __init__(self, rq_row, routing_engine, simulation_time_step, scenario_parameters):
+        super().__init__(rq_row, routing_engine, simulation_time_step, scenario_parameters)
+        self.highest_mod_utility = None
+        self.mc_pars = {}
+        for mandatory_par in INPUT_PARAMETERS_MultinomialLogitRequest["input_parameters_mandatory"]:
+            # read uniform scenario parameter input
+            self.mc_pars[mandatory_par] = scenario_parameters[mandatory_par]
+            # possibly overwrite by agent-level input from demand file
+            agent_value = rq_row.get(mandatory_par, None)
+            if agent_value is not None:
+                self.mc_pars[mandatory_par] = agent_value
+        for optional_par in INPUT_PARAMETERS_MultinomialLogitRequest["input_parameters_optional"]:
+            # test if uniform scenario parameter is given
+            uniform_val = scenario_parameters.get(optional_par, None)
+            if uniform_val is not None:
+                self.mc_pars[optional_par] = uniform_val
+            # possibly overwrite by agent-level input from demand file
+            agent_value = rq_row.get(optional_par, None)
+            if agent_value is not None:
+                self.mc_pars[optional_par] = agent_value
+        # compute direct route information
+        self.set_direct_route_travel_infos(routing_engine)
+
+    def choose_offer(self, scenario_parameters, simulation_time):
+        """Use a max utility model to choose between MOD providers and PT"""
+        utils = {}
+        # TODO # public transport
+
+        # private vehicle
+        utils[G_MC_DEC_PV] = self.mc_pars[G_MC_U0_PV] - self.mc_pars[G_MC_VOT] * self.direct_route_travel_distance - self.mc_pars[G_MC_C_D_PV] * self.direct_route_travel_distance
+        # walking
+        utils[G_MC_DEC_WALK] = -self.mc_pars[G_MC_VOT] * self.mc_pars[G_WALKING_SPEED] * self.direct_route_travel_distance
+        # biking if speed is given
+        if G_BIKING_SPEED in self.mc_pars and G_MC_U0_BIKE in self.mc_pars:
+            utils[G_MC_DEC_BIKE] = self.mc_pars[G_MC_U0_BIKE] - self.mc_pars[G_MC_VOT] * self.mc_pars[G_BIKING_SPEED] * self.direct_route_travel_distance
+        # MOD offers # TODO # a nested logit would be more appropriate for multiple MOD operators
+        for op_id, offer in self.offer.items():
+            if not offer.service_declined():
+                t_wait = offer[G_OFFER_WAIT]
+                t_drive = offer[G_OFFER_DRIVE]
+                fare = offer.get(G_OFFER_FARE, 0)
+                utils[op_id] = -self.mc_pars[G_MC_VOT] * (t_wait + t_drive) - fare
+                if self.highest_mod_utility is None or utils[op_id] > self.highest_mod_utility:
+                    self.highest_mod_utility = utils[op_id]
+        # computing probabilities
+        alpha = self.mc_pars.get(G_MC_LOG_DISP_FACTOR, 1.0)
+        exp_sum = sum([np.exp(alpha * x) for x in utils.values()])
+        prob = {}
+        for mode, util in utils.items():
+            prob[mode] = np.exp(alpha * util) / exp_sum
+        # drawing from probability distribution
+        self.chosen_operator_id = random.choices(list(prob.keys()), weights=list(prob.values()))[0]
+        if self.chosen_operator_id in self.offer.keys():
+            self.fare = self.offer[self.chosen_operator_id].get(G_OFFER_FARE, 0)
+        return self.chosen_operator_id
+
+    # Optionally override record_data to include the PT utility in output
+    def _add_record(self, record_dict):
+        # TODO # adapt
+        # record_dict['pt_utility'] = self.pt_utility
+        # record_dict['highest_mod_utility'] = self.highest_mod_utility
+        pass
+
 
 #----------------------------------------------------------------------------#
 
@@ -696,7 +880,8 @@ class MasterRandomChoiceRequest(RequestBase):
         choice = np.random.choice(list_options)
         self.fare = self.offer[choice].get(G_OFFER_FARE, 0)
         LOG.debug(f"{self.get_rid_struct()} chooses offer {choice} from options {list_options} | offers {offer_str(self.offer)}")
-        return choice
+        self.chosen_operator_id = choice
+        return self.chosen_operator_id
 # -------------------------------------------------------------------------------------------------------------------- #
 
 INPUT_PARAMETERS_SlaveRequest = {
@@ -785,7 +970,8 @@ class BasicParcelRequest(ParcelRequestBase): # TODO
         elif len(self.offer) > 1:
             raise NotImplementedError("More than one offer?")
         else:
-            return list(self.offer.keys())[0]
+            self.chosen_operator_id = list(self.offer.keys())[0]
+            return self.chosen_operator_id
         return None
     
 INPUT_PARAMETERS_SlaveParcelRequest = {

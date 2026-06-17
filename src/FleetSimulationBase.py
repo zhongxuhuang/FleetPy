@@ -721,7 +721,11 @@ class FleetSimulationBase:
         :return: chosen operator
         """
         # The op_id/chosen_operator should be clearly defined: 
-        # 0-n are amod operators, -1 is the rejection, -2 is the pt operator, None is undecided
+        # 0-n are amod operators, -1 is the rejection, None is undecided
+        # G_MC_DEC_PT = -2
+        # G_MC_DEC_PV = -3
+        # G_MC_DEC_WALK = -4
+        # G_MC_DEC_BIKE = -5
         chosen_operator = rq_obj.choose_offer(self.scenario_parameters, sim_time)
         LOG.debug(f" -> chosen operator: {chosen_operator}")
         if chosen_operator is None: # undecided
@@ -731,9 +735,17 @@ class FleetSimulationBase:
                 self.demand.undecided_rq[rid] = rq_obj
         elif chosen_operator == -1:
             self._user_leaves_system(rid, sim_time)
+        elif chosen_operator in [-2, -4, -5]:
+            self._user_leaves_system(rid, sim_time)
+        elif chosen_operator == -3:
+            route = self.routing_engine.return_best_route_1to1(rq_obj.o_pos, rq_obj.d_pos)
+            tt, td = self.routing_engine.return_route_infos(route, rq_obj.o_pos[2])
+            # TODO # think about changing the signature of assign_route_to_network()
+            self.routing_engine.assign_route_to_network(route, sim_time, sim_time+tt, 1)
+            self._user_leaves_system(rid, sim_time)
         else:
-            amode_confirmed_rids = self.broker.inform_user_booking(rid, rq_obj, sim_time, chosen_operator)
-            for rid, rq_obj in amode_confirmed_rids:
+            amod_confirmed_rids = self.broker.inform_user_booking(rid, rq_obj, sim_time, chosen_operator)
+            for rid, rq_obj in amod_confirmed_rids:
                 self.demand.waiting_rq[rid] = rq_obj
             try:
                 del self.demand.undecided_rq[rid]

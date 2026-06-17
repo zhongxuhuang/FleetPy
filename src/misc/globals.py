@@ -138,10 +138,13 @@ G_MC_VOT = "value_of_time"
 G_MC_U0_PV = "private_vehicle_mode_choice_intercept"
 G_MC_TRANSFER_P = "pt_transfer_penalty"
 G_MC_C_D_PV = "private_vehicle_full_costs_per_m"
+G_MC_U0_BIKE = "bike_mode_choice_intercept"
+G_MC_LOG_DISP_FACTOR = "log_alpha"
 
 # traveler specific attributes
 G_WALKING_SPEED = "walking_speed"
 G_MAX_WALKING_DIST = "max_walking_dist"
+G_BIKING_SPEED = "biking_speed"
 
 # -> inter-modal travellers
 G_IM_MIN_MOD_DISTANCE = "min_IM_MOD_distance"
@@ -519,9 +522,10 @@ G_RQ_STATE_FIRSTLASTMILE = 3
 
 # non-MoD choices
 # ---------------
-G_MC_DEC_PT = -1
-G_MC_DEC_PV = -2
-G_MC_DEC_IM = -3
+G_MC_DEC_PT = -2
+G_MC_DEC_PV = -3
+G_MC_DEC_WALK = -4
+G_MC_DEC_BIKE = -5
 
 # offer parameters
 # ----------------
