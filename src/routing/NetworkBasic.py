@@ -14,6 +14,7 @@ in order to guarantee correct import in other modules.
 # -----------------------------
 import os
 import logging
+import heapq
 
 # additional module imports (> requirements)
 # ------------------------------------------
@@ -172,8 +173,27 @@ class NetworkBasic(NetworkBase):
         self.current_dijkstra_number = 1    #used in dijkstra-class
         self.sim_time = 0   # TODO #
         self.zones = None   # TODO #
+        self.initial_zone_vehicle_counts = {}
+        self.zone_vehicle_counter = {}
+        self.current_pv_zone_vehicle_counts = {}
+        self.current_total_zone_vehicle_counts = {}
+        self.current_route_zone_edge_infos = {}
+        self.current_route_zone_distances = {}
+        self.zone_mfd_functions = {}
+        self.zone_vehicle_counter_initialized = False
+        self.zone_vehicle_counter_init_time = None
+        self._pv_zone_time_occupations = []
+        self._route_edge_occupations = []
+        self._zone_priority_queue_states = {}
+        self._active_mod_zone_trips = {}
         with open(os.sep.join([self.network_name_dir, "base","crs.info"]), "r") as f:
             self.crs = f.read()
+        LOG.debug(
+            f"network loaded vehicle counts: "
+            f"pv={self.current_pv_zone_vehicle_counts}, "
+            f"mod={self.zone_vehicle_counter}, "
+            f"total={self.current_total_zone_vehicle_counts}"
+        )
 
     def loadNetwork(self, network_name_dir, network_dynamics_file_name=None, scenario_time=None):
         nodes_f = os.path.join(network_name_dir, "base", "nodes.csv")
@@ -242,6 +262,7 @@ class NetworkBasic(NetworkBase):
         """
         LOG.debug(f"update network {simulation_time}")
         self.sim_time = simulation_time
+        self._update_current_zone_vehicle_counts(simulation_time)
         if update_state:
             if self.travel_time_file_infos.get(simulation_time, None) is not None:
                 self.load_tt_file(simulation_time)
@@ -298,6 +319,353 @@ class NetworkBasic(NetworkBase):
     def get_must_stop_nodes(self):
         """ returns a list of node-indices with all nodes with a stop_only attribute """
         return [n.node_index for n in self.nodes if n.must_stop()]
+
+    def initialize_zone_vehicle_counter(self, list_vehicles=None, list_positions=None, simulation_time=None):
+        """Initializes a per-zone vehicle counter at the beginning of a simulation.
+
+        Zone assignment is intentionally kept behind _get_zone_from_position(); if no zone
+        system is attached yet, the counter remains empty until the zone logic is added.
+
+        :param list_vehicles: optional iterable of vehicle objects with a pos attribute
+        :param list_positions: optional iterable of position tuples
+        :param simulation_time: simulation time at which the counter is initialized
+        :return: dictionary zone_id -> number of vehicles in this zone
+        """
+        zone_counts = {zone_id: 0 for zone_id in self._get_defined_zones()}
+        positions = []
+        if list_positions is not None:
+            positions.extend(list_positions)
+        if list_vehicles is not None:
+            for veh_obj in list_vehicles:
+                pos = getattr(veh_obj, "pos", None)
+                if pos is not None:
+                    positions.append(pos)
+
+        for pos in positions:
+            zone_id = self._get_zone_from_position(pos)
+            if zone_id is None:
+                continue
+            zone_counts[zone_id] = zone_counts.get(zone_id, 0) + 1
+
+        self.initial_zone_vehicle_counts = dict(zone_counts)
+        self.zone_vehicle_counter = dict(zone_counts)
+        self.current_pv_zone_vehicle_counts = {zone_id: 0 for zone_id in self._get_defined_zones()}
+        self.current_total_zone_vehicle_counts = dict(zone_counts)
+        self.zone_vehicle_counter_initialized = True
+        self.zone_vehicle_counter_init_time = simulation_time
+        self._initialize_zone_priority_queue_states(simulation_time)
+        LOG.debug(
+            f"initial zone vehicle counts at {simulation_time}: "
+            f"pv={self.current_pv_zone_vehicle_counts}, "
+            f"mod={self.zone_vehicle_counter}, "
+            f"total={self.current_total_zone_vehicle_counts}"
+        )
+        return self.zone_vehicle_counter
+
+    def _initialize_zone_priority_queue_states(self, simulation_time=None):
+        """Initializes per-zone priority queue bathtub states."""
+        init_time = self.sim_time if simulation_time is None else simulation_time
+        for zone_id in self._get_defined_zones():
+            self._get_zone_priority_queue_state(zone_id, init_time)
+
+    def _get_zone_priority_queue_state(self, zone_id, simulation_time=None):
+        """Returns the priority queue state of a zone, creating it lazily if needed."""
+        if zone_id is None:
+            return None
+        if zone_id not in self._zone_priority_queue_states:
+            init_time = self.sim_time if simulation_time is None else simulation_time
+            number_vehicles = self.zone_vehicle_counter.get(zone_id, 0)
+            avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
+            self._zone_priority_queue_states[zone_id] = {
+                "E": 0,
+                "G": 0,
+                "z": 0.0,
+                "v": 0.0 if avg_speed is None else avg_speed,
+                "last_time": init_time,
+                "heap": []
+            }
+        return self._zone_priority_queue_states[zone_id]
+
+    def _advance_zone_priority_queue_state(self, zone_id, simulation_time):
+        """Advances one zone bathtub state and returns newly completed MoD trips."""
+        state = self._get_zone_priority_queue_state(zone_id, simulation_time)
+        if state is None:
+            return 0
+        last_time = state["last_time"]
+        if simulation_time < last_time:
+            return 0
+        delta_t = simulation_time - last_time
+        if delta_t > 0:
+            state["z"] += delta_t * state["v"]
+            state["last_time"] = simulation_time
+
+        completed = 0
+        while state["heap"] and state["heap"][0] <= state["z"]:
+            heapq.heappop(state["heap"])
+            completed += 1
+        if completed:
+            state["G"] += completed
+        self._set_zone_mod_count_from_priority_queue(zone_id)
+        return completed
+
+    def _set_zone_mod_count_from_priority_queue(self, zone_id):
+        """Updates the stored MoD count from active bathtub trips."""
+        state = self._get_zone_priority_queue_state(zone_id, self.sim_time)
+        active_count = max(state["E"] - state["G"], 0)
+        self.zone_vehicle_counter[zone_id] = active_count
+
+    def _update_zone_priority_queue_speeds(self):
+        """Refreshes zone speeds from the existing MFD hooks and current total counts."""
+        for zone_id, state in self._zone_priority_queue_states.items():
+            number_vehicles = self.current_total_zone_vehicle_counts.get(zone_id, 0)
+            avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
+            if avg_speed is not None:
+                state["v"] = avg_speed
+
+    def register_zone_mod_trip(self, zone_id, start_time, travel_distance, number_vehicles=1, fallback_speed=None):
+        """Registers MoD trips in one zone using the priority queue bathtub formulation."""
+        if zone_id is None or number_vehicles <= 0:
+            return
+        state = self._get_zone_priority_queue_state(zone_id, start_time)
+        number_vehicles_in_zone = self.current_total_zone_vehicle_counts.get(zone_id, 0)
+        avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles_in_zone)
+        if avg_speed is not None and avg_speed > 0:
+            state["v"] = avg_speed
+        elif fallback_speed is not None and fallback_speed > 0:
+            state["v"] = fallback_speed
+        if travel_distance <= 0:
+            state["E"] += number_vehicles
+            state["G"] += number_vehicles
+            self._set_zone_mod_count_from_priority_queue(zone_id)
+            return
+
+        projected_delta_t = max(start_time - state["last_time"], 0)
+        projected_z = state["z"] + projected_delta_t * state["v"]
+        theta = travel_distance + projected_z
+        for _ in range(number_vehicles):
+            heapq.heappush(state["heap"], theta)
+        state["E"] += number_vehicles
+        self._set_zone_mod_count_from_priority_queue(zone_id)
+
+    def register_mod_route_to_zone_priority_queues(self, route, start_time, end_time=None, number_vehicles=1):
+        """Registers a route as zone-level MoD trips for the priority queue formulation."""
+        if not route or len(route) < 2 or number_vehicles <= 0:
+            return
+
+        zone_route_infos = []
+        total_route_distance = 0
+        for i in range(len(route) - 1):
+            o_node = route[i]
+            d_node = route[i + 1]
+            zone_id = self._get_zone_from_position((o_node, d_node, 0.0))
+            if zone_id is None:
+                continue
+            edge_tt, edge_distance = self.get_section_infos(o_node, d_node)
+            zone_route_infos.append((zone_id, edge_distance, edge_tt))
+            total_route_distance += edge_distance
+
+        if not zone_route_infos:
+            return
+
+        current_zone = None
+        current_zone_distance = 0
+        current_zone_static_tt = 0
+        current_zone_entry_distance = 0
+        accumulated_distance = 0
+        zone_segments = []
+        for zone_id, edge_distance, edge_tt in zone_route_infos:
+            if current_zone is None:
+                current_zone = zone_id
+                current_zone_entry_distance = accumulated_distance
+            elif zone_id != current_zone:
+                zone_segments.append((current_zone, current_zone_entry_distance, current_zone_distance, current_zone_static_tt))
+                current_zone = zone_id
+                current_zone_distance = 0
+                current_zone_static_tt = 0
+                current_zone_entry_distance = accumulated_distance
+            current_zone_distance += edge_distance
+            current_zone_static_tt += edge_tt
+            accumulated_distance += edge_distance
+        if current_zone is not None:
+            zone_segments.append((current_zone, current_zone_entry_distance, current_zone_distance, current_zone_static_tt))
+
+        total_route_time = None if end_time is None else end_time - start_time
+        for zone_id, entry_distance, zone_distance, zone_static_tt in zone_segments:
+            zone_start_time = start_time
+            if total_route_time is not None and total_route_distance > 0:
+                zone_start_time = start_time + total_route_time * entry_distance / total_route_distance
+            fallback_speed = zone_distance / zone_static_tt if zone_static_tt > 0 else None
+            self.register_zone_mod_trip(zone_id, zone_start_time, zone_distance, number_vehicles, fallback_speed=fallback_speed)
+
+    def _get_remaining_contiguous_zone_infos(self, route, current_position, route_index, zone_id):
+        """Returns remaining distance and static travel time on one contiguous zone segment."""
+        if current_position[1] is None or zone_id is None:
+            return 0, 0
+
+        distance = 0
+        static_tt = 0
+        c_zone_id = self._get_zone_from_position((current_position[0], current_position[1], 0.0))
+        if c_zone_id != zone_id:
+            return 0, 0
+        edge_tt, edge_distance = self.get_section_infos(current_position[0], current_position[1])
+        distance += (1 - current_position[2]) * edge_distance
+        static_tt += (1 - current_position[2]) * edge_tt
+
+        for i in range(route_index + 1, len(route)):
+            o_node = route[i - 1]
+            d_node = route[i]
+            c_zone_id = self._get_zone_from_position((o_node, d_node, 0.0))
+            if c_zone_id != zone_id:
+                break
+            edge_tt, edge_distance = self.get_section_infos(o_node, d_node)
+            distance += edge_distance
+            static_tt += edge_tt
+        return distance, static_tt
+
+    def _register_mod_zone_trip_if_needed(self, sim_vid_id, current_position, route, route_index, simulation_time):
+        """Registers a moving MoD vehicle once when it enters a zone segment."""
+        if sim_vid_id is None or current_position[1] is None:
+            return
+        zone_id = self._get_zone_from_position((current_position[0], current_position[1], 0.0))
+        if zone_id is None:
+            self._active_mod_zone_trips.pop(sim_vid_id, None)
+            return
+        if self._active_mod_zone_trips.get(sim_vid_id) == zone_id:
+            return
+
+        zone_distance, zone_static_tt = self._get_remaining_contiguous_zone_infos(route, current_position, route_index, zone_id)
+        if zone_distance <= 0:
+            return
+        fallback_speed = zone_distance / zone_static_tt if zone_static_tt > 0 else None
+        self.register_zone_mod_trip(zone_id, simulation_time, zone_distance, 1, fallback_speed=fallback_speed)
+        self._active_mod_zone_trips[sim_vid_id] = zone_id
+
+    def _register_pv_zone_occupation(self, position, start_time, end_time, number_vehicles):
+        """Stores that private vehicles are expected in a zone during a time interval."""
+        zone_id = self._get_zone_from_position(position)
+        if zone_id is None or end_time <= start_time:
+            return
+        self._pv_zone_time_occupations.append((zone_id, start_time, end_time, number_vehicles))
+
+    def _get_pv_zone_vehicle_counts(self, simulation_time):
+        """Returns private vehicle counts per zone for the given simulation time."""
+        zone_counts = {zone_id: 0 for zone_id in self._get_defined_zones()}
+        for zone_id, start_time, end_time, number_vehicles in self._pv_zone_time_occupations:
+            if start_time <= simulation_time < end_time:
+                zone_counts[zone_id] = zone_counts.get(zone_id, 0) + number_vehicles
+        return zone_counts
+
+    def _update_current_zone_vehicle_counts(self, simulation_time):
+        """Combines heap-based MoD counts and pre-registered private vehicle counts."""
+        tracked_zone_ids = set(self._get_defined_zones()) | set(self._zone_priority_queue_states.keys())
+        for zone_id in tracked_zone_ids:
+            self._advance_zone_priority_queue_state(zone_id, simulation_time)
+        pv_counts = self._get_pv_zone_vehicle_counts(simulation_time)
+        all_zone_ids = set(self.zone_vehicle_counter.keys()) | set(pv_counts.keys()) | set(self._zone_priority_queue_states.keys())
+        self.current_pv_zone_vehicle_counts = pv_counts
+        self.current_total_zone_vehicle_counts = {
+            zone_id: self.zone_vehicle_counter.get(zone_id, 0) + pv_counts.get(zone_id, 0)
+            for zone_id in all_zone_ids
+        }
+        LOG.debug(
+            f"zone vehicle counts at {simulation_time}: "
+            f"pv={self.current_pv_zone_vehicle_counts}, "
+            f"mod={self.zone_vehicle_counter}, "
+            f"total={self.current_total_zone_vehicle_counts}"
+        )
+        self._update_zone_priority_queue_speeds()
+        return self.current_total_zone_vehicle_counts
+
+    def _classify_route_edges_by_zone(self, route, last_position):
+        """Classifies the currently planned remaining route into zone-specific edge lists."""
+        zone_edge_infos = {}
+        zone_distances = {}
+        if len(route) == 0:
+            self.current_route_zone_edge_infos = zone_edge_infos
+            self.current_route_zone_distances = zone_distances
+            return zone_edge_infos, zone_distances
+
+        c_pos = last_position
+        if c_pos[2] is None:
+            c_pos = (c_pos[0], route[0], 0.0)
+
+        for i in range(len(route)):
+            if c_pos[2] is None:
+                c_pos = (c_pos[0], route[i], 0.0)
+            o_node = c_pos[0]
+            d_node = c_pos[1]
+            zone_id = self._get_zone_from_position((o_node, d_node, 0.0))
+            if zone_id is not None:
+                _, edge_distance = self.get_section_infos(o_node, d_node)
+                zone_edge_infos.setdefault(zone_id, []).append((o_node, d_node, edge_distance))
+                zone_distances[zone_id] = zone_distances.get(zone_id, 0) + edge_distance
+            c_pos = (route[i], None, None)
+
+        self.current_route_zone_edge_infos = zone_edge_infos
+        self.current_route_zone_distances = zone_distances
+        return zone_edge_infos, zone_distances
+
+    def _get_zone_average_speed_from_mfd(self, zone_id, number_vehicles):
+        """Placeholder for zone MFD equations.
+
+        Expected return unit is distance unit per second, matching edge distance / travel time.
+        Return None to keep using the network's original edge travel time.
+        """
+        if zone_id is None or zone_id < 0:
+            return None
+        if zone_id in self.zone_mfd_functions:
+            return self.zone_mfd_functions[zone_id](number_vehicles)
+        # TODO: the default MFD speed should be implemented in the attached ZoneSystem
+        # via get_mfd_average_speed(zone_id, number_vehicles).
+        if self.zones is not None and hasattr(self.zones, "get_mfd_average_speed"):
+            return self.zones.get_mfd_average_speed(zone_id, number_vehicles)
+        return None
+
+    def set_zone_mfd_function(self, zone_id, mfd_function):
+        """Registers an MFD function for one zone: number_vehicles -> average speed."""
+        self.zone_mfd_functions[zone_id] = mfd_function
+        state = self._zone_priority_queue_states.get(zone_id)
+        if state is not None:
+            number_vehicles = self.current_total_zone_vehicle_counts.get(zone_id, 0)
+            avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
+            if avg_speed is not None:
+                state["v"] = avg_speed
+
+    def _get_mfd_section_infos(self, start_node_index, end_node_index):
+        """Returns edge travel time and distance using zone MFD speed when available."""
+        base_tt, edge_distance = self.get_section_infos(start_node_index, end_node_index)
+        zone_id = self._get_zone_from_position((start_node_index, end_node_index, 0.0))
+        if zone_id is None or zone_id < 0:
+            return base_tt, edge_distance
+
+        number_vehicles = self.current_total_zone_vehicle_counts.get(zone_id, 0)
+        avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
+        if avg_speed is None or avg_speed <= 0:
+            return base_tt, edge_distance
+        dynamic_tt = edge_distance / avg_speed
+        LOG.debug(
+            f"mfd edge ({start_node_index}->{end_node_index}) zone={zone_id}: "
+            f"pv={self.current_pv_zone_vehicle_counts.get(zone_id, 0)}, "
+            f"mod={self.zone_vehicle_counter.get(zone_id, 0)}, "
+            f"total={number_vehicles}, dynamic_v={avg_speed}, tt={dynamic_tt}"
+        )
+        return dynamic_tt, edge_distance
+
+    def _get_defined_zones(self):
+        """Returns currently known zone ids; kept as a placeholder for future zone definitions."""
+        if self.zones is None:
+            return []
+        if hasattr(self.zones, "get_all_zones"):
+            return self.zones.get_all_zones()
+        if isinstance(self.zones, dict):
+            return sorted(self.zones.keys())
+        return list(self.zones)
+
+    def _get_zone_from_position(self, position):
+        """Placeholder for mapping a network position to a zone id."""
+        if self.zones is not None and hasattr(self.zones, "get_zone_from_pos"):
+            return self.zones.get_zone_from_pos(position)
+        return None
 
     def return_position_from_str(self, position_str):
         a, b, c = position_str.split(";")
@@ -372,16 +740,44 @@ class NetworkBasic(NetworkBase):
                 distance += dis
         return (arrival_time, distance)
 
-    def assign_route_to_network(self, route, start_time):
+    def assign_route_to_network(self, route, start_time, end_time, number_vehicles=1):
         """This method can be used for dynamic network models in which the travel times will be derived from the
         number of vehicles/routes assigned to the network.
 
         :param route: list of nodes
         :param start_time: can be used as an offset in case the route is planned for a future time
-        :return:
-        TODO
+        :param end_time: end of travel
+        :param number_vehicles: accepted for interface compatibility; each call represents one route assignment
         """
-        pass
+        if not route or len(route) < 2:
+            return
+
+        route_edge_infos = []
+        total_route_distance = 0
+        for i in range(len(route) - 1):
+            o_node = route[i]
+            d_node = route[i + 1]
+            _, edge_distance = self.get_section_infos(o_node, d_node)
+            route_edge_infos.append((o_node, d_node, edge_distance))
+            total_route_distance += edge_distance
+
+        current_time = start_time
+        if total_route_distance > 0:
+            total_assigned_tt = end_time - start_time
+            for i, (o_node, d_node, edge_distance) in enumerate(route_edge_infos):
+                if i == len(route_edge_infos) - 1:
+                    next_time = end_time
+                else:
+                    next_time = current_time + total_assigned_tt * edge_distance / total_route_distance
+                self._route_edge_occupations.append((o_node, d_node, current_time, next_time))
+                self._register_pv_zone_occupation((o_node, d_node, 0.0), current_time, next_time, number_vehicles)
+                current_time = next_time
+        else:
+            for i, (o_node, d_node, _) in enumerate(route_edge_infos):
+                next_time = end_time
+                self._route_edge_occupations.append((o_node, d_node, current_time, next_time))
+                self._register_pv_zone_occupation((o_node, d_node, 0.0), current_time, next_time, number_vehicles)
+                current_time = next_time
 
     def get_section_overhead(self, position, from_start=True, customized_section_cost_function=None):
         """This method computes the section overhead for a certain position.
@@ -872,9 +1268,12 @@ class NetworkBasic(NetworkBase):
         else:
             end_time = self.sim_time + time_step
             last_time = self.sim_time
+        self._classify_route_edges_by_zone(route, last_position)
         c_pos = last_position
         if c_pos[2] is None:
             if len(route) == 0:
+                if sim_vid_id is not None:
+                    self._active_mod_zone_trips.pop(sim_vid_id, None)
                 return c_pos, 0, last_time, [], []
             c_pos = (c_pos[0], route[0], 0.0)
         list_passed_nodes = []
@@ -889,7 +1288,8 @@ class NetworkBasic(NetworkBase):
             if c_pos[2] is None:
                 c_pos = (c_pos[0], route[i], 0)
             rel_factor = (1 - c_pos[2])
-            tt, td = self.get_section_infos(c_pos[0], c_pos[1])
+            self._register_mod_zone_trip_if_needed(sim_vid_id, c_pos, route, i, last_time)
+            tt, td = self._get_mfd_section_infos(c_pos[0], c_pos[1])
             if tt > 86400:
                 LOG.warning(f"move_along_route: very large travel time on edge ({c_pos[0]} -> {c_pos[1]} for vid {sim_vid_id} at time {new_sim_time}) (blocked after tt update?) -> vehicle jumps this edge")
                 tt = 0
@@ -914,6 +1314,8 @@ class NetworkBasic(NetworkBase):
                 last_time = next_node_time
                 c_pos = (next_node, None, None)
                 arrival_in_time_step = last_time
+        if arrival_in_time_step != -1 and sim_vid_id is not None:
+            self._active_mod_zone_trips.pop(sim_vid_id, None)
         return c_pos, driven_distance, arrival_in_time_step, list_passed_nodes, list_passed_node_times
 
     def add_travel_infos_to_database(self, travel_info_dict):
@@ -935,5 +1337,3 @@ class NetworkBasic(NetworkBase):
         depending on the class the function can be overwritten to store certain results in the database
         """
         pass
-
-    
