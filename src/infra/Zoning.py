@@ -60,6 +60,18 @@ class ZoneSystem:
         if self.general_info_df is not None:
             self.node_zone_df = pd.merge(self.node_zone_df, self.general_info_df, left_on=G_ZONE_ZID, right_on=G_ZONE_ZID)
         self.node_zone_df.set_index(G_ZONE_NID, inplace=True)
+        self.node_zone_lookup = self.node_zone_df[~self.node_zone_df.index.duplicated(keep="first")][G_ZONE_ZID].to_dict()
+        duplicate_node_zone_df = self.node_zone_df[self.node_zone_df.index.duplicated(keep=False)]
+        if not duplicate_node_zone_df.empty:
+            ambiguous_nodes = duplicate_node_zone_df.groupby(level=0)[G_ZONE_ZID].nunique()
+            ambiguous_nodes = ambiguous_nodes[ambiguous_nodes > 1]
+            if not ambiguous_nodes.empty:
+                LOG.warning(
+                    "Zone file %s contains %s nodes assigned to multiple zones. "
+                    "Using the first assignment for get_zone_from_node().",
+                    node_zone_f,
+                    len(ambiguous_nodes),
+                )
         self.zone_centroids = None # zone_id -> list node_indices (centroid not unique!)
         if G_ZONE_CEN in self.node_zone_df.columns:
             self.zone_centroids = {}
@@ -154,7 +166,7 @@ class ZoneSystem:
         :return: zone_id of the node in question; return -1 if no zone is found
         :rtype: int
         """
-        return self.node_zone_df[G_ZONE_ZID].get(node_id, -1)
+        return self.node_zone_lookup.get(node_id, -1)
 
     def get_zone_from_pos(self, pos):
         """This method returns the zone_id of a given position by returning the zone of the origin node.
@@ -165,6 +177,24 @@ class ZoneSystem:
         :rtype: int
         """
         return self.get_zone_from_node(pos[0])
+
+    def get_mfd_average_speed(self, zone_id, number_vehicles):
+        """Returns the MFD average speed for a zone.
+
+        TODO: implement the zone-specific MFD speed function here. The return value must use the
+        same distance/time units as the network edge data, i.e. edge_distance / travel_time.
+        Return None to keep using the original network edge travel times for this zone.
+
+        :param zone_id: id of the zone
+        :type zone_id: int
+        :param number_vehicles: current number of MoD and private vehicles in the zone
+        :type number_vehicles: int
+        :return: average speed in network distance units per second, or None
+        :rtype: float | None
+        """
+        # TODO: replace this placeholder with the actual MFD equation, e.g.
+        # speed = f(number_vehicles, zone_capacity, free_flow_speed, jam_density)
+        return None
 
     def get_centroid_node(self, zone_id):
         # TODO # after ISTTT: get_centroid_node()

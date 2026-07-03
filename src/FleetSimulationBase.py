@@ -244,6 +244,8 @@ class FleetSimulationBase:
         # TODO # check consistency of scenario inputs / another way to refactor add_init_data ?
         self.routing_engine: NetworkBase = load_routing_engine(network_type, self.dir_names[G_DIR_NETWORK],
                                                                network_dynamics_file_name=network_dynamics_file)
+        if hasattr(self.routing_engine, "zones"):
+            self.routing_engine.zones = self.zones
         if network_type == "NetworkDynamicNFDClusters":
             self.routing_engine.add_init_data(self.start_time, self.time_step,
                                               self.scenario_parameters[G_NW_DENSITY_T_BIN_SIZE],
@@ -592,6 +594,11 @@ class FleetSimulationBase:
                     init_state_info[G_V_INIT_SOC] = 0.5 * (1 + np.random.random())
                     veh_obj.set_initial_state(op_fleetctrl, self.routing_engine, init_state_info,
                                                 self.scenario_parameters[G_SIM_START_TIME], self.init_blocking)
+        if hasattr(self.routing_engine, "initialize_zone_vehicle_counter"):
+            self.routing_engine.initialize_zone_vehicle_counter(
+                list_vehicles=self.sim_vehicles.values(),
+                simulation_time=self.scenario_parameters[G_SIM_START_TIME]
+            )
 
     def save_final_state(self):
         """
@@ -739,9 +746,10 @@ class FleetSimulationBase:
             self._user_leaves_system(rid, sim_time)
         elif chosen_operator == -3:
             route = self.routing_engine.return_best_route_1to1(rq_obj.o_pos, rq_obj.d_pos)
-            tt, td = self.routing_engine.return_route_infos(route, rq_obj.o_pos[2])
+            rel_start_pos = 0.0 if rq_obj.o_pos[2] is None else rq_obj.o_pos[2]
+            arrival_time, td = self.routing_engine.return_route_infos(route, rel_start_pos, sim_time)
             # TODO # think about changing the signature of assign_route_to_network()
-            self.routing_engine.assign_route_to_network(route, sim_time, sim_time+tt, 1)
+            self.routing_engine.assign_route_to_network(route, sim_time, arrival_time, 1)
             self._user_leaves_system(rid, sim_time)
         else:
             amod_confirmed_rids = self.broker.inform_user_booking(rid, rq_obj, sim_time, chosen_operator)

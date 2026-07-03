@@ -345,6 +345,19 @@ class BasicRequest(RequestBase):
 
 # -------------------------------------------------------------------------------------------------------------------- #
 
+class BasicRequestDeclineToPV(BasicRequest):
+    """Test request model: use PV whenever all MoD operators decline service."""
+    type = "BasicRequestDeclineToPV"
+
+    def choose_offer(self, sc_parameters, simulation_time):
+        chosen_operator = super().choose_offer(sc_parameters, simulation_time)
+        if chosen_operator == -1:
+            self.chosen_operator_id = G_MC_DEC_PV
+            return G_MC_DEC_PV
+        return chosen_operator
+
+# -------------------------------------------------------------------------------------------------------------------- #
+
 INPUT_PARAMETERS_IndividualConstraintRequest = {
     "doc" : """This request class makes decisions based on hard constraints; individual constraints can be read from demand file columns. If an operator offer
     satisfies these, it will be accepted. Moreover, it can be used to communicate earliest and latest pick-up time to the operators.""",
