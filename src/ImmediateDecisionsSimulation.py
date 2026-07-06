@@ -86,12 +86,20 @@ class ImmediateDecisionsSimulation(FleetSimulationBase):
             last_time = None
         list_new_traveler_rid_obj = self.demand.get_new_travelers(sim_time, since=last_time)
         # 3)
+        decision_counts = {}
         for rid, rq_obj in list_undecided_travelers + list_new_traveler_rid_obj:
             self.broker.inform_request(rid, rq_obj, sim_time)
             amod_offers = self.broker.collect_offers(rid)
             for op_id, amod_offer in amod_offers.items():
                 rq_obj.receive_offer(op_id, amod_offer, sim_time)
-            self._rid_chooses_offer(rid, rq_obj, sim_time)
+            chosen_operator = self._rid_chooses_offer(rid, rq_obj, sim_time)
+            decision_counts[chosen_operator] = decision_counts.get(chosen_operator, 0) + 1
+        LOG.debug(
+            f"request decision summary t={sim_time}: "
+            f"new={len(list_new_traveler_rid_obj)} undecided_retry={len(list_undecided_travelers)} "
+            f"decisions={decision_counts} waiting={len(self.demand.waiting_rq)} "
+            f"undecided={len(self.demand.undecided_rq)}"
+        )
         # 4)
         self._check_waiting_request_cancellations(sim_time)
         # 5)

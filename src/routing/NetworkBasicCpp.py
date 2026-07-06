@@ -3,6 +3,7 @@
 # -----------------------------
 import os
 import logging
+import tempfile
 
 # additional module imports (> requirements)
 # ------------------------------------------
@@ -63,6 +64,22 @@ class NetworkBasicCpp(NetworkBasic):
             f = self.travel_time_file_infos[scenario_time]
             tt_file = os.path.join(f, "edges_td_att.csv")
             self.cpp_router.updateEdgeTravelTimes(tt_file.encode())
+
+    def _after_dynamic_edge_tt_update(self, changed_edges):
+        if self.cpp_router is None or not changed_edges:
+            return
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp_f:
+            tmp_f.write("from_node,to_node,edge_tt\n")
+            for o_node_index, d_node_index, edge_tt in changed_edges:
+                tmp_f.write(f"{o_node_index},{d_node_index},{edge_tt}\n")
+            tmp_f_name = tmp_f.name
+        try:
+            self.cpp_router.updateEdgeTravelTimes(tmp_f_name.encode())
+        finally:
+            try:
+                os.remove(tmp_f_name)
+            except OSError:
+                LOG.warning(f"Could not remove temporary dynamic TT file {tmp_f_name}")
 
     def return_travel_costs_1to1(self, origin_position, destination_position, customized_section_cost_function = None):
         """

@@ -52,7 +52,7 @@ INPUT_PARAMETERS_FleetSimulationBase = {
         G_DEMAND_NAME, G_RQ_FILE, G_AR_MAX_DEC_T
     ],
     "input_parameters_optional": [
-        G_SIM_TIME_STEP, G_NR_CH_OPERATORS, G_SIM_REALTIME_PLOT_FLAG, "log_level", G_SIM_ROUTE_OUT_FLAG, G_SIM_REPLAY_FLAG, G_INIT_STATE_SCENARIO,
+        G_SIM_TIME_STEP, G_DYNAMIC_TT_UPDATE_INTERVAL, G_NR_CH_OPERATORS, G_SIM_REALTIME_PLOT_FLAG, "log_level", G_SIM_ROUTE_OUT_FLAG, G_SIM_REPLAY_FLAG, G_INIT_STATE_SCENARIO,
         G_ZONE_SYSTEM_NAME, G_INFRA_NAME
     ],
     "mandatory_modules": [
@@ -246,6 +246,12 @@ class FleetSimulationBase:
                                                                network_dynamics_file_name=network_dynamics_file)
         if hasattr(self.routing_engine, "zones"):
             self.routing_engine.zones = self.zones
+        if hasattr(self.routing_engine, "set_dynamic_tt_update_interval"):
+            self.routing_engine.set_dynamic_tt_update_interval(
+                self.scenario_parameters.get(G_DYNAMIC_TT_UPDATE_INTERVAL, self.time_step),
+                simulation_time_step=self.time_step,
+                start_time=self.start_time
+            )
         if network_type == "NetworkDynamicNFDClusters":
             self.routing_engine.add_init_data(self.start_time, self.time_step,
                                               self.scenario_parameters[G_NW_DENSITY_T_BIN_SIZE],
@@ -455,6 +461,11 @@ class FleetSimulationBase:
         if not self.skip_output:
             veh_type_df.to_csv(veh_type_f, index=False)
         self.vehicle_update_order: tp.Dict[tp.Tuple[int, int], int] = {vid : 1 for vid in self.sim_vehicles.keys()}
+        LOG.debug(
+            f"fleet vehicles loaded: total={len(self.sim_vehicles)} "
+            f"by_operator={{{', '.join([str(op_id) + ': ' + str(sum(1 for v in self.sim_vehicles.values() if v.op_id == op_id)) for op_id in range(self.n_op)])}}} "
+            f"types={veh_type_df.groupby(G_V_TYPE).size().to_dict() if not veh_type_df.empty else {}}"
+        )
 
     def _load_broker_module(self):
         """ Loads the broker """
@@ -599,6 +610,10 @@ class FleetSimulationBase:
                 list_vehicles=self.sim_vehicles.values(),
                 simulation_time=self.scenario_parameters[G_SIM_START_TIME]
             )
+        LOG.debug(
+            f"initial vehicle placement complete: total={len(self.sim_vehicles)} "
+            f"sample={[(sim_vid, veh_obj.pos, str(veh_obj.status)) for sim_vid, veh_obj in sorted(self.sim_vehicles.items())[:20]]}"
+        )
 
     def save_final_state(self):
         """
@@ -710,6 +725,24 @@ class FleetSimulationBase:
                 self.broker.receive_status_update(op_id, vid, next_time, passed_VRL, True)
             else:
                 self.broker.receive_status_update(op_id, vid, next_time, passed_VRL, force_update_plan)
+        if LOG.isEnabledFor(logging.DEBUG):
+            status_counts = {}
+            assigned_count = 0
+            moving_count = 0
+            sample_assigned = []
+            for sim_vid, veh_obj in sorted(self.sim_vehicles.items()):
+                status_key = str(veh_obj.status)
+                status_counts[status_key] = status_counts.get(status_key, 0) + 1
+                if veh_obj.assigned_route:
+                    assigned_count += 1
+                    if len(sample_assigned) < 10:
+                        sample_assigned.append((sim_vid, status_key, veh_obj.pos, len(veh_obj.assigned_route)))
+                if status_key in [str(x) for x in G_DRIVING_STATUS]:
+                    moving_count += 1
+            LOG.debug(
+                f"fleet state summary t={next_time}: statuses={status_counts} "
+                f"assigned={assigned_count} moving={moving_count} sample_assigned={sample_assigned}"
+            )
         # TODO # after ISTTT: live visualization: send vehicle states (self.live_visualization_flag==True)
 
     def update_vehicle_routes(self, sim_time):
@@ -734,7 +767,6 @@ class FleetSimulationBase:
         # G_MC_DEC_WALK = -4
         # G_MC_DEC_BIKE = -5
         chosen_operator = rq_obj.choose_offer(self.scenario_parameters, sim_time)
-        LOG.debug(f" -> chosen operator: {chosen_operator}")
         if chosen_operator is None: # undecided
             if rq_obj.leaves_system(sim_time):
                 self._user_leaves_system(rid, sim_time)
