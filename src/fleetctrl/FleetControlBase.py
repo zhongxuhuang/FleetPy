@@ -608,6 +608,22 @@ class FleetControlBase(metaclass=ABCMeta):
         prq = self.rq_dict[rid]
         prq.set_soft_do_constraints(new_soft_lpt, new_soft_ept)
 
+    def _estimate_request_road_toll(self, sim_time : int, prq : PlanRequest) -> int:
+        """Estimate the user-facing road toll for a request in cent.
+
+        The first implementation uses the best direct passenger route. The returned toll can be added to the
+        user-facing fare while remaining available as a separate output component.
+        """
+        zone_system = getattr(self.routing_engine, "zones", None)
+        if zone_system is None:
+            return 0
+        if not hasattr(zone_system, "get_route_toll_cost"):
+            return 0
+        route = self.routing_engine.return_best_route_1to1(prq.o_pos, prq.d_pos)
+        if not route:
+            return 0
+        return int(zone_system.get_route_toll_cost(self.routing_engine, sim_time, route))
+
     def _compute_fare(self, sim_time : int, prq : PlanRequest, assigned_veh_plan : VehiclePlan=None) -> float:
         """This method can be used to compute the fare. It already considers utilization and zone surge pricing. It
         can be overwritten by subclasses if necessary.

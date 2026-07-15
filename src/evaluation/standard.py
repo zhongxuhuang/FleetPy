@@ -275,6 +275,7 @@ def standard_evaluation(output_dir, evaluation_start_time = None, evaluation_end
         # base user_values
         op_user_sum_travel_time = np.nan
         op_revenue = np.nan
+        op_revenue_net_toll = np.nan
         op_avg_wait_time = np.nan
         op_med_wait_time = np.nan
         op_90perquant_wait_time = np.nan
@@ -335,6 +336,8 @@ def standard_evaluation(output_dir, evaluation_start_time = None, evaluation_end
             # sum fare
             if G_RQ_FARE in op_users.columns:
                 op_revenue = op_users[G_RQ_FARE].sum()
+                if G_RQ_TOLL in op_users.columns:
+                    op_revenue_net_toll = op_revenue - op_users[G_RQ_TOLL].sum()
             # avg waiting time
             if G_RQ_PU in op_users.columns and G_RQ_TIME in op_users.columns:
                 op_users["wait time"] = op_users[G_RQ_PU] - op_users[G_RQ_TIME]
@@ -541,6 +544,7 @@ def standard_evaluation(output_dir, evaluation_start_time = None, evaluation_end
         result_dict["vehicle revenue hours [Fzg h]"] = op_vehicle_revenue_hours
         result_dict["total toll"] = op_toll
         result_dict["mod revenue"] = op_revenue
+        result_dict["mod revenue net of toll"] = op_revenue_net_toll
         result_dict["mod fix costs"] = op_fix_costs
         result_dict["mod var costs"] = op_var_costs
         result_dict["total CO2 emissions [t]"] = op_co2 / 10**6

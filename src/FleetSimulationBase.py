@@ -24,6 +24,7 @@ import numpy as np
 from src.misc.init_modules import load_fleet_control_module, load_routing_engine, load_broker_module
 from src.demand.demand import Demand, SlaveDemand
 from src.simulation.Vehicles import SimulationVehicle
+from src.infra.RoadPricing import load_road_pricing_policy
 if tp.TYPE_CHECKING:
     from src.fleetctrl.FleetControlBase import FleetControlBase
     from src.routing.NetworkBase import NetworkBase
@@ -52,8 +53,9 @@ INPUT_PARAMETERS_FleetSimulationBase = {
         G_DEMAND_NAME, G_RQ_FILE, G_AR_MAX_DEC_T
     ],
     "input_parameters_optional": [
-        G_SIM_TIME_STEP, G_DYNAMIC_TT_UPDATE_INTERVAL, G_NR_CH_OPERATORS, G_SIM_REALTIME_PLOT_FLAG, "log_level", G_SIM_ROUTE_OUT_FLAG, G_SIM_REPLAY_FLAG, G_INIT_STATE_SCENARIO,
-        G_ZONE_SYSTEM_NAME, G_INFRA_NAME
+        G_SIM_TIME_STEP, G_NR_CH_OPERATORS, G_SIM_REALTIME_PLOT_FLAG, "log_level", G_SIM_ROUTE_OUT_FLAG, G_SIM_REPLAY_FLAG, G_INIT_STATE_SCENARIO,
+        G_ZONE_SYSTEM_NAME, G_INFRA_NAME, G_RP_PRICING_M, G_RP_STATIC_TOLL_COEFF, G_RP_STATIC_TOLL_F, G_RP_K_CRIT,
+        G_RP_K_CRIT_F, G_RP_BASE_TOLL_COEFF, G_RP_MAX_TOLL_COEFF, G_RP_UPDATE_INT, G_RP_FALLBACK
     ],
     "mandatory_modules": [
         G_SIM_ENV, G_NETWORK_TYPE, G_RQ_TYP1, G_OP_MODULE
@@ -246,12 +248,7 @@ class FleetSimulationBase:
                                                                network_dynamics_file_name=network_dynamics_file)
         if hasattr(self.routing_engine, "zones"):
             self.routing_engine.zones = self.zones
-        if hasattr(self.routing_engine, "set_dynamic_tt_update_interval"):
-            self.routing_engine.set_dynamic_tt_update_interval(
-                self.scenario_parameters.get(G_DYNAMIC_TT_UPDATE_INTERVAL, self.time_step),
-                simulation_time_step=self.time_step,
-                start_time=self.start_time
-            )
+        self.road_pricing = load_road_pricing_policy(self.zones, self.scenario_parameters, self.dir_names)
         if network_type == "NetworkDynamicNFDClusters":
             self.routing_engine.add_init_data(self.start_time, self.time_step,
                                               self.scenario_parameters[G_NW_DENSITY_T_BIN_SIZE],
@@ -306,6 +303,11 @@ class FleetSimulationBase:
         # broker
         self.broker: 'BrokerBase' = None
         self._load_broker_module()
+
+    def _update_road_pricing(self, sim_time):
+        if self.road_pricing is not None:
+            return self.road_pricing.update(sim_time, self.routing_engine)
+        return False
 
     def _load_demand_module(self):
         """ Loads some demand modules """
@@ -605,11 +607,6 @@ class FleetSimulationBase:
                     init_state_info[G_V_INIT_SOC] = 0.5 * (1 + np.random.random())
                     veh_obj.set_initial_state(op_fleetctrl, self.routing_engine, init_state_info,
                                                 self.scenario_parameters[G_SIM_START_TIME], self.init_blocking)
-        if hasattr(self.routing_engine, "initialize_zone_vehicle_counter"):
-            self.routing_engine.initialize_zone_vehicle_counter(
-                list_vehicles=self.sim_vehicles.values(),
-                simulation_time=self.scenario_parameters[G_SIM_START_TIME]
-            )
         LOG.debug(
             f"initial vehicle placement complete: total={len(self.sim_vehicles)} "
             f"sample={[(sim_vid, veh_obj.pos, str(veh_obj.status)) for sim_vid, veh_obj in sorted(self.sim_vehicles.items())[:20]]}"
@@ -725,6 +722,13 @@ class FleetSimulationBase:
                 self.broker.receive_status_update(op_id, vid, next_time, passed_VRL, True)
             else:
                 self.broker.receive_status_update(op_id, vid, next_time, passed_VRL, force_update_plan)
+        if hasattr(self.routing_engine, "update_mod_zone_vehicle_counts"):
+            moving_mod_positions = [
+                veh_obj.pos
+                for veh_obj in self.sim_vehicles.values()
+                if veh_obj.status in G_DRIVING_STATUS
+            ]
+            self.routing_engine.update_mod_zone_vehicle_counts(moving_mod_positions)
         if LOG.isEnabledFor(logging.DEBUG):
             status_counts = {}
             assigned_count = 0

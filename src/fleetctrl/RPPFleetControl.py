@@ -514,8 +514,13 @@ class RPPFleetControlFullInsertion(FleetControlBase):
             pu_time, do_time = assigned_vehicle_plan.pax_info.get(prq.get_rid_struct())
             # offer = {G_OFFER_WAIT: pu_time - simulation_time, G_OFFER_DRIVE: do_time - pu_time,
             #          G_OFFER_FARE: int(prq.init_direct_td * self.dist_fare + self.base_fare)}
+            toll = self._estimate_request_road_toll(simulation_time, prq)
+            fare = self._compute_fare(simulation_time, prq, assigned_vehicle_plan) + toll
             offer = TravellerOffer(prq.get_rid_struct(), self.op_id, pu_time - prq.rq_time, do_time - pu_time,
-                                   self._compute_fare(simulation_time, prq, assigned_vehicle_plan))
+                                   fare,
+                                   additional_parameters={
+                                       G_OFFER_TOLL: toll
+                                   })
             prq.set_service_offered(offer)  # has to be called
         else:
             offer = self._create_rejection(prq, simulation_time)

@@ -77,6 +77,7 @@ class ImmediateDecisionsSimulation(FleetSimulationBase):
         # 1)
         self.update_sim_state_fleets(sim_time - self.time_step, sim_time)
         new_travel_times = self.routing_engine.update_network(sim_time)
+        self._update_road_pricing(sim_time)
         if new_travel_times:
             self.broker.inform_network_travel_time_update(sim_time)
         # 2)

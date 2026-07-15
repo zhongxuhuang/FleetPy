@@ -1184,9 +1184,11 @@ class SemiOnDemandBatchAssignmentFleetcontrol(RidePoolingBatchOptimizationFleetC
             add_offer[G_OFFER_WALKING_DISTANCE_ORIGIN] = self.walking_dist_origin[rq.get_rid_struct()] * 1000  # in m
             add_offer[G_OFFER_WALKING_DISTANCE_DESTINATION] = self.walking_dist_destination[
                                                                   rq.get_rid_struct()] * 1000  # in m
+            toll = self._estimate_request_road_toll(simulation_time, rq)
+            add_offer[G_OFFER_TOLL] = toll
 
             offer = TravellerOffer(rq.get_rid(), self.op_id, pu_time - rq.get_rq_time(), do_time - pu_time,
-                                   int(rq.init_direct_td * self.dist_fare + self.base_fare),
+                                   int(rq.init_direct_td * self.dist_fare + self.base_fare) + toll,
                                    additional_parameters=add_offer)
             rq.set_service_offered(offer)
         else:

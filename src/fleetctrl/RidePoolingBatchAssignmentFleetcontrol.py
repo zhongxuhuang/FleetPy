@@ -195,7 +195,9 @@ class RidePoolingBatchAssignmentFleetcontrol(RidePoolingBatchOptimizationFleetCo
                 add_offer[G_OFFER_PU_INT_START] = new_earliest_pu
                 add_offer[G_OFFER_PU_INT_END] = new_latest_pu
             add_offer["vid"] = assigned_vehicle_plan.vid
-            fare = self._compute_fare(simulation_time, prq, assigned_vehicle_plan)
+            toll = self._estimate_request_road_toll(simulation_time, prq)
+            add_offer[G_OFFER_TOLL] = toll
+            fare = self._compute_fare(simulation_time, prq, assigned_vehicle_plan) + toll
             offer = TravellerOffer(prq.get_rid(), self.op_id, pu_time - prq.get_rq_time(), do_time - pu_time, fare,
                     additional_parameters=add_offer)
             prq.set_service_offered(offer)

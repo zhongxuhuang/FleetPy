@@ -519,9 +519,14 @@ class RidePoolingBatchOptimizationFleetControlBase(FleetControlBase):
         """
         if assigned_vehicle_plan is not None:
             pu_time, do_time = assigned_vehicle_plan.pax_info.get(prq.get_rid_struct())
+            toll = self._estimate_request_road_toll(simulation_time, prq)
+            add_offer = {
+                "vid": assigned_vehicle_plan.vid,
+                G_OFFER_TOLL: toll
+            }
             offer = TravellerOffer(prq.get_rid_struct(), self.op_id, pu_time - prq.rq_time, do_time - pu_time,
-                                   self._compute_fare(simulation_time, prq, assigned_vehicle_plan), 
-                                   additional_parameters={"vid": assigned_vehicle_plan.vid})
+                                   self._compute_fare(simulation_time, prq, assigned_vehicle_plan) + toll,
+                                   additional_parameters=add_offer)
             prq.set_service_offered(offer)  # has to be called
         else:
             offer = self._create_rejection(prq, simulation_time)
