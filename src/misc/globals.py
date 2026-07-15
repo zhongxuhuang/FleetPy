@@ -66,11 +66,19 @@ G_NW_DENSITY_T_BIN_SIZE = "nw_density_temporal_bin_size"
 G_NW_DENSITY_AVG_DURATION = "nw_density_avg_duration"
 # network dynamic file
 G_NW_DYNAMIC_F = "nw_dynamic_f"
-G_DYNAMIC_TT_UPDATE_INTERVAL = "dynamic_tt_update_interval"
 
 # zone specific attributes
 G_PARK_COST_SCALE = "park_cost_scale"
 G_TOLL_COST_SCALE = "toll_cost_scale"
+G_RP_PRICING_M = "road_pricing_method"
+G_RP_STATIC_TOLL_COEFF = "rp_static_toll_coeff_dict"
+G_RP_STATIC_TOLL_F = "rp_static_toll_coeff_file"
+G_RP_K_CRIT = "rp_k_critical_dict"
+G_RP_K_CRIT_F = "rp_k_critical_file"
+G_RP_BASE_TOLL_COEFF = "rp_base_toll_coeff"
+G_RP_MAX_TOLL_COEFF = "rp_max_toll_coeff"
+G_RP_UPDATE_INT = "rp_update_interval"
+G_RP_FALLBACK = "rp_mfd_fallback"
 
 # broker specific attributes
 G_BROKER_TYPE = "broker_type"
@@ -136,6 +144,8 @@ G_AR_PRICE_F = "user_price_sensitivity_func_dict"
 
 # traveler mode choice attributes
 G_MC_VOT = "value_of_time"
+G_MC_BETA_TIME = "beta_time"
+G_MC_BETA_MONEY = "beta_money"
 G_MC_U0_PV = "private_vehicle_mode_choice_intercept"
 G_MC_TRANSFER_P = "pt_transfer_penalty"
 G_MC_C_D_PV = "private_vehicle_full_costs_per_m"

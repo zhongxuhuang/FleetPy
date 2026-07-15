@@ -146,8 +146,13 @@ class BrokerDecisionCtrl(PoolingIRSAssignmentBatchOptimization):
         # additional driven kilometers: offer_dict_without_plan["add_fleet_vmt"]
         if assigned_vehicle_plan is not None: # create offer attributes
             pu_time, do_time = assigned_vehicle_plan.pax_info.get(prq.get_rid_struct())
-            offer = TravellerOffer(prq.get_rid_struct(), self.op_id, pu_time - prq.rq_time, do_time - pu_time, int(prq.init_direct_td * self.dist_fare + self.base_fare),
-                additional_parameters={G_OFFER_ADD_VMT : offer_dict_without_plan[G_OFFER_ADD_VMT]})
+            toll = self._estimate_request_road_toll(sim_time, prq)
+            fare = int(prq.init_direct_td * self.dist_fare + self.base_fare) + toll
+            offer = TravellerOffer(prq.get_rid_struct(), self.op_id, pu_time - prq.rq_time, do_time - pu_time, fare,
+                additional_parameters={
+                    G_OFFER_ADD_VMT: offer_dict_without_plan[G_OFFER_ADD_VMT],
+                    G_OFFER_TOLL: toll
+                })
             prq.set_service_offered(offer)  # has to be called
         else: # rejection
             offer = TravellerOffer(prq.get_rid(), self.op_id, None, None, None)

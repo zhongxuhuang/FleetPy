@@ -52,6 +52,7 @@ class RequestBase(metaclass=ABCMeta):
 
     def __init__(self, rq_row, routing_engine, simulation_time_step, scenario_parameters):
         # input
+        self.routing_engine = routing_engine
         self.rid = int(rq_row.get(G_RQ_ID, rq_row.name))  # request id is index of dataframe
         self.sub_rid_struct = None
         self.is_parcel = False  # requests are usually persons
@@ -87,6 +88,7 @@ class RequestBase(metaclass=ABCMeta):
         self.do_pos = None
         self.t_egress = None
         self.fare = None
+        self.toll = 0
         # direct_route_infos
         self.direct_route_travel_time = None
         self.direct_route_travel_distance = None
@@ -171,6 +173,7 @@ class RequestBase(metaclass=ABCMeta):
         record_dict[G_RQ_PU] = self.pu_time
         record_dict[G_RQ_DO] = self.do_time
         record_dict[G_RQ_FARE] = self.fare
+        record_dict[G_RQ_TOLL] = self.toll
         record_dict[G_RQ_MODAL_STATE] = self.modal_state
         return self._add_record(record_dict)
 
@@ -690,6 +693,7 @@ class UserUtilityRequest(RequestBase):
         if selected_op is not None:
             chosen_offer = self.offer[selected_op]
             self.fare = chosen_offer.get(G_OFFER_FARE, 0)
+            self.toll = chosen_offer.get(G_OFFER_TOLL, 0)
         self.chosen_operator_id = selected_op
         return self.chosen_operator_id
 
@@ -774,6 +778,7 @@ class PTUtilityRequest(RequestBase):
         else:
             chosen_offer = self.offer[selected_op]
             self.fare = chosen_offer.get(G_OFFER_FARE, 0)
+            self.toll = chosen_offer.get(G_OFFER_TOLL, 0)
         return selected_op
 
     # Optionally override record_data to include the PT utility in output
@@ -786,10 +791,12 @@ class PTUtilityRequest(RequestBase):
 # ---------------------------------------------------------------------------
 
 INPUT_PARAMETERS_MultinomialLogitRequest = {
-    "doc": "Uses a multinomial logit model to determine the selected choice. Can include AMOD, PT, PV, BIKE, WALK",
+    "doc": "Uses a multinomial logit model to determine the selected choice. "
+           "All time terms use beta_time and all monetary terms use beta_money.",
     "inherit": "RequestBase",
-    "input_parameters_mandatory": [G_MC_U0_PV, G_MC_VOT, G_WALKING_SPEED],  # TODO # coefficients for mode choice
-    "input_parameters_optional": [G_MC_LOG_DISP_FACTOR, G_MC_U0_BIKE, G_BIKING_SPEED], # TODO # add PT
+    "input_parameters_mandatory": [G_MC_U0_PV, G_MC_BETA_TIME, G_MC_BETA_MONEY,
+                                   G_MC_C_D_PV, G_WALKING_SPEED],
+    "input_parameters_optional": [G_MC_LOG_DISP_FACTOR, G_MC_U0_BIKE, G_BIKING_SPEED],
     "mandatory_modules": [],
     "optional_modules": []
 }
@@ -805,66 +812,194 @@ class MultinomialLogitRequest(RequestBase):
 
     def __init__(self, rq_row, routing_engine, simulation_time_step, scenario_parameters):
         super().__init__(rq_row, routing_engine, simulation_time_step, scenario_parameters)
+        self.rq_row = rq_row
         self.highest_mod_utility = None
+        self.mode_choice_utilities = {}
+        self.mode_choice_probabilities = {}
         self.mc_pars = {}
         for mandatory_par in INPUT_PARAMETERS_MultinomialLogitRequest["input_parameters_mandatory"]:
             # read uniform scenario parameter input
             self.mc_pars[mandatory_par] = scenario_parameters[mandatory_par]
             # possibly overwrite by agent-level input from demand file
             agent_value = rq_row.get(mandatory_par, None)
-            if agent_value is not None:
+            if self._is_valid_parameter_value(agent_value):
                 self.mc_pars[mandatory_par] = agent_value
         for optional_par in INPUT_PARAMETERS_MultinomialLogitRequest["input_parameters_optional"]:
             # test if uniform scenario parameter is given
             uniform_val = scenario_parameters.get(optional_par, None)
-            if uniform_val is not None:
+            if self._is_valid_parameter_value(uniform_val):
                 self.mc_pars[optional_par] = uniform_val
             # possibly overwrite by agent-level input from demand file
             agent_value = rq_row.get(optional_par, None)
-            if agent_value is not None:
+            if self._is_valid_parameter_value(agent_value):
                 self.mc_pars[optional_par] = agent_value
         # compute direct route information
         self.set_direct_route_travel_infos(routing_engine)
+        self._apply_precomputed_direct_route_infos()
 
-    def choose_offer(self, scenario_parameters, simulation_time):
-        """Use a max utility model to choose between MOD providers and PT"""
+    @staticmethod
+    def _is_valid_parameter_value(value):
+        if value is None:
+            return False
+        try:
+            return not pd.isna(value)
+        except TypeError:
+            return True
+
+    @staticmethod
+    def _format_mode_choice_dict(mode_choice_dict):
+        return ";".join([f"{mode}:{value}" for mode, value in mode_choice_dict.items()])
+
+    def _get_first_valid_row_value(self, column_names):
+        for column_name in column_names:
+            value = self.rq_row.get(column_name, None)
+            if self._is_valid_parameter_value(value):
+                return value
+        return None
+
+    def _apply_precomputed_direct_route_infos(self):
+        """Use precomputed PV/direct route attributes from the demand row if available."""
+        direct_time = self._get_first_valid_row_value([G_RQ_DRT, "pv_travel_time", "pv_tt"])
+        if direct_time is not None:
+            self.direct_route_travel_time = float(direct_time)
+
+        direct_distance = self._get_first_valid_row_value([G_RQ_DRD, "pv_travel_distance", "pv_distance"])
+        if direct_distance is not None:
+            self.direct_route_travel_distance = float(direct_distance)
+
+    def _compute_pv_toll(self, simulation_time):
+        zone_system = getattr(self.routing_engine, "zones", None)
+        if zone_system is None:
+            return 0
+        if not hasattr(zone_system, "get_route_toll_cost"):
+            return 0
+        route = self.routing_engine.return_best_route_1to1(self.o_pos, self.d_pos)
+        if not route:
+            return 0
+        return int(zone_system.get_route_toll_cost(self.routing_engine, simulation_time, route))
+
+    def _compute_external_mode_utilities(self, simulation_time):
+        """Compute utilities for non-MOD modes that are always available to the traveller."""
         utils = {}
-        # TODO # public transport
+        beta_time = float(self.mc_pars[G_MC_BETA_TIME])
+        beta_money = float(self.mc_pars[G_MC_BETA_MONEY])
+        direct_distance = float(self.direct_route_travel_distance)
+        direct_time = float(self.direct_route_travel_time)
+        pv_distance_cost = float(self.mc_pars[G_MC_C_D_PV]) * direct_distance
+        self.current_pv_toll = self._compute_pv_toll(simulation_time)
 
-        # private vehicle
-        utils[G_MC_DEC_PV] = self.mc_pars[G_MC_U0_PV] - self.mc_pars[G_MC_VOT] * self.direct_route_travel_distance - self.mc_pars[G_MC_C_D_PV] * self.direct_route_travel_distance
-        # walking
-        utils[G_MC_DEC_WALK] = -self.mc_pars[G_MC_VOT] * self.mc_pars[G_WALKING_SPEED] * self.direct_route_travel_distance
-        # biking if speed is given
-        if G_BIKING_SPEED in self.mc_pars and G_MC_U0_BIKE in self.mc_pars:
-            utils[G_MC_DEC_BIKE] = self.mc_pars[G_MC_U0_BIKE] - self.mc_pars[G_MC_VOT] * self.mc_pars[G_BIKING_SPEED] * self.direct_route_travel_distance
-        # MOD offers # TODO # a nested logit would be more appropriate for multiple MOD operators
+        utils[G_MC_DEC_PV] = (
+            float(self.mc_pars[G_MC_U0_PV])
+            - beta_time * direct_time
+            - beta_money * (pv_distance_cost + self.current_pv_toll)
+        )
+
+        walking_speed = float(self.mc_pars[G_WALKING_SPEED])
+        if walking_speed <= 0:
+            raise ValueError(f"{G_WALKING_SPEED} must be greater than zero for {self.type}.")
+        walk_time = direct_distance / walking_speed
+        utils[G_MC_DEC_WALK] = -beta_time * walk_time
+
+        biking_speed = self.mc_pars.get(G_BIKING_SPEED)
+        if self._is_valid_parameter_value(biking_speed):
+            biking_speed = float(biking_speed)
+            if biking_speed <= 0:
+                raise ValueError(f"{G_BIKING_SPEED} must be greater than zero for {self.type}.")
+            bike_time = direct_distance / biking_speed
+            bike_intercept = float(self.mc_pars.get(G_MC_U0_BIKE, 0))
+            utils[G_MC_DEC_BIKE] = bike_intercept - beta_time * bike_time
+
+        return utils
+
+    def _compute_pt_utility(self, scenario_parameters):
+        """Compute PT utility if PT data is already attached to the request.
+
+        TODO: PT travel time is not generated here; add gtfs_total_duration_min or pt_utility
+        to the demand file/preprocessing later to activate PT in this MNL choice set.
+        """
+        pt_utility = self.rq_row.get('pt_utility', None)
+        if self._is_valid_parameter_value(pt_utility):
+            return {G_MC_DEC_PT: float(pt_utility)}
+
+        gtfs_dur = self.rq_row.get('gtfs_total_duration_min', None)
+        if not self._is_valid_parameter_value(gtfs_dur):
+            return {}
+
+        pt_intercept = scenario_parameters.get('U_0_T', None)
+        if not self._is_valid_parameter_value(pt_intercept):
+            return {}
+
+        beta_time = float(self.mc_pars[G_MC_BETA_TIME])
+        beta_money = float(self.mc_pars[G_MC_BETA_MONEY])
+        # GTFS duration is stored in minutes while all other time inputs are seconds.
+        utility = float(pt_intercept) - beta_time * float(gtfs_dur) * 60
+        pt_fare = scenario_parameters.get(G_PT_FARE_B, 0)
+        if self._is_valid_parameter_value(pt_fare):
+            utility -= beta_money * float(pt_fare)
+        nr_transfers = self.rq_row.get(G_OFFER_TRANSFERS, None)
+        transfer_penalty = scenario_parameters.get(G_MC_TRANSFER_P, None)
+        if self._is_valid_parameter_value(nr_transfers) and self._is_valid_parameter_value(transfer_penalty):
+            utility -= float(transfer_penalty) * float(nr_transfers)
+        return {G_MC_DEC_PT: utility}
+
+    def _compute_mod_offer_utilities(self):
+        """Compute utilities for non-declined MOD offers."""
+        utils = {}
+        beta_time = float(self.mc_pars[G_MC_BETA_TIME])
+        beta_money = float(self.mc_pars[G_MC_BETA_MONEY])
         for op_id, offer in self.offer.items():
             if not offer.service_declined():
-                t_wait = offer[G_OFFER_WAIT]
-                t_drive = offer[G_OFFER_DRIVE]
+                t_wait = float(offer[G_OFFER_WAIT])
+                t_drive = float(offer[G_OFFER_DRIVE])
                 fare = offer.get(G_OFFER_FARE, 0)
-                utils[op_id] = -self.mc_pars[G_MC_VOT] * (t_wait + t_drive) - fare
-                if self.highest_mod_utility is None or utils[op_id] > self.highest_mod_utility:
-                    self.highest_mod_utility = utils[op_id]
-        # computing probabilities
-        alpha = self.mc_pars.get(G_MC_LOG_DISP_FACTOR, 1.0)
-        exp_sum = sum([np.exp(alpha * x) for x in utils.values()])
-        prob = {}
-        for mode, util in utils.items():
-            prob[mode] = np.exp(alpha * util) / exp_sum
+                if not self._is_valid_parameter_value(fare):
+                    fare = 0
+                fare = float(fare)
+                utils[op_id] = -beta_time * (t_wait + t_drive) - beta_money * fare
+        return utils
+
+    def _compute_mode_choice_probabilities(self, utilities):
+        alpha = float(self.mc_pars.get(G_MC_LOG_DISP_FACTOR, 1.0))
+        scaled_utilities = {mode: alpha * utility for mode, utility in utilities.items()}
+        max_scaled_utility = max(scaled_utilities.values())
+        exp_utilities = {mode: np.exp(utility - max_scaled_utility) for mode, utility in scaled_utilities.items()}
+        exp_sum = sum(exp_utilities.values())
+        return {mode: exp_utility / exp_sum for mode, exp_utility in exp_utilities.items()}
+
+    def choose_offer(self, scenario_parameters, simulation_time):
+        """Choose between available MOD offers and external travel modes with a multinomial logit model."""
+        utils = self._compute_external_mode_utilities(simulation_time)
+        utils.update(self._compute_pt_utility(scenario_parameters))
+        mod_utils = self._compute_mod_offer_utilities()
+        utils.update(mod_utils)
+
+        if mod_utils:
+            self.highest_mod_utility = max(mod_utils.values())
+        else:
+            self.highest_mod_utility = None
+
+        prob = self._compute_mode_choice_probabilities(utils)
+        self.mode_choice_utilities = utils
+        self.mode_choice_probabilities = prob
+
         # drawing from probability distribution
         self.chosen_operator_id = random.choices(list(prob.keys()), weights=list(prob.values()))[0]
         if self.chosen_operator_id in self.offer.keys():
             self.fare = self.offer[self.chosen_operator_id].get(G_OFFER_FARE, 0)
+            self.toll = self.offer[self.chosen_operator_id].get(G_OFFER_TOLL, 0)
+        elif self.chosen_operator_id == G_MC_DEC_PV:
+            self.fare = 0
+            self.toll = self.current_pv_toll
+        else:
+            self.fare = 0
+            self.toll = 0
         return self.chosen_operator_id
 
-    # Optionally override record_data to include the PT utility in output
     def _add_record(self, record_dict):
-        # TODO # adapt
-        # record_dict['pt_utility'] = self.pt_utility
-        # record_dict['highest_mod_utility'] = self.highest_mod_utility
-        pass
+        record_dict['mode_choice_utilities'] = self._format_mode_choice_dict(self.mode_choice_utilities)
+        record_dict['mode_choice_probabilities'] = self._format_mode_choice_dict(self.mode_choice_probabilities)
+        record_dict['highest_mod_utility'] = self.highest_mod_utility
+        return record_dict
 
 
 #----------------------------------------------------------------------------#

@@ -400,10 +400,12 @@ class SoDZonalBatchAssignmentFleetcontrol(SemiOnDemandBatchAssignmentFleetcontro
             pt_lines = self.return_ptline()
             add_offer[G_OFFER_ZONAL_ORIGIN_ZONE] = pt_lines.return_pos_zone(rq.get_o_stop_info()[0])
             add_offer[G_OFFER_ZONAL_DESTINATION_ZONE] = pt_lines.return_pos_zone(rq.get_d_stop_info()[0])
+            toll = self._estimate_request_road_toll(simulation_time, rq)
+            add_offer[G_OFFER_TOLL] = toll
             pt_lines.rid_zone_assignment[rq.get_rid()] = pt_lines.return_rid_zone(rq.get_rid())
 
             offer = TravellerOffer(rq.get_rid(), self.op_id, pu_time - rq.get_rq_time(), do_time - pu_time,
-                                   int(rq.init_direct_td * self.dist_fare + self.base_fare),
+                                   int(rq.init_direct_td * self.dist_fare + self.base_fare) + toll,
                                    additional_parameters=add_offer)
             rq.set_service_offered(offer)
 

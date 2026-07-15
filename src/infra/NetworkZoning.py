@@ -31,7 +31,39 @@ class NetworkZoneSystem(ZoneSystem):
         self.current_toll_coefficients = {}
         self.current_park_costs = {}
         self.current_park_search_durations = {}
+        self.test_mfd_parameters = self._load_test_mfd_parameters()
 
+    def _load_test_mfd_parameters(self):
+        """Returns small scenario MFDs used for the Munich reservoir MT tests."""
+        if self.zone_system_name != "Munich_reservoirs":
+            return {}
+        return {
+            # free_flow_speed, minimum_speed in m/s; k_critical is counted vehicles in the zone.
+            0: {"free_flow_speed": 13.5, "minimum_speed": 3.5, "k_critical": 45.0, "shape": 1.7},
+            1: {"free_flow_speed": 12.0, "minimum_speed": 2.8, "k_critical": 35.0, "shape": 1.8},
+            2: {"free_flow_speed": 14.5, "minimum_speed": 4.0, "k_critical": 55.0, "shape": 1.6},
+            3: {"free_flow_speed": 11.5, "minimum_speed": 2.5, "k_critical": 28.0, "shape": 1.9},
+            4: {"free_flow_speed": 8.5, "minimum_speed": 1.2, "k_critical": 15.0, "shape": 2.1},
+        }
+
+    def get_mfd_average_speed(self, zone_id, number_vehicles):
+        """Returns the test MFD speed for Munich reservoirs 0-4.
+
+        Zone 5 intentionally returns None so that the routing engine keeps the
+        original static edge travel times outside the reservoirs.
+        """
+        params = self.test_mfd_parameters.get(zone_id)
+        if params is None:
+            return None
+        number_vehicles = max(float(number_vehicles), 0.0)
+        free_flow_speed = params["free_flow_speed"]
+        minimum_speed = params["minimum_speed"]
+        k_critical = params["k_critical"]
+        shape = params["shape"]
+        speed = minimum_speed + (free_flow_speed - minimum_speed) * np.exp(
+            -((number_vehicles / k_critical) ** shape)
+        )
+        return max(speed, minimum_speed)
 
     def check_first_last_mile_option(self, o_node, d_node):
         """This method checks whether first/last mile service should be offered in a given zone.
@@ -69,6 +101,18 @@ class NetworkZoneSystem(ZoneSystem):
 
     def set_current_toll_cost_scale_factor(self, general_toll_cost):
         self.current_toll_cost_scale = general_toll_cost
+
+    def set_current_toll_coefficients(self, toll_coefficients):
+        """Sets direct zone toll coefficients in cent per meter.
+
+        :param toll_coefficients: zone id -> cent per meter
+        :type toll_coefficients: dict
+        """
+        self.current_toll_coefficients = {}
+        valid_zones = set(self.get_all_zones())
+        for k, v in toll_coefficients.items():
+            if k in valid_zones:
+                self.current_toll_coefficients[k] = float(v)
 
     def set_current_toll_costs(self, use_pre_defined_zone_scales=False, rel_toll_cost_dict={}):
         """This method sets the current toll costs in cent per meter.
@@ -130,6 +174,13 @@ class NetworkZoneSystem(ZoneSystem):
                 toll_costs += np.rint(self.current_toll_coefficients.get(zone, 0) * length)
         external_pv_costs = park_costs + toll_costs
         return external_pv_costs, toll_costs, park_costs
+
+    def get_route_toll_cost(self, routing_engine, sim_time, route):
+        """Returns only the route-based toll costs in cent."""
+        _, toll_costs, _ = self.get_external_route_costs(
+            routing_engine, sim_time, route, park_origin=False, park_destination=False
+        )
+        return toll_costs
     
     def get_parking_average_access_egress_times(self, o_node, d_node):
         # TODO # after ISTTT: get_parking_average_access_egress_times()
