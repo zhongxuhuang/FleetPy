@@ -6,8 +6,8 @@ entry point. It augments an existing FleetPy demand CSV with door-to-door
 public transport travel time attributes that can be consumed by
 ``MultinomialLogitRequest``:
 
-    - ``gtfs_total_duration_min``: total rail-based PT duration in minutes
-    - ``nr_transfers``: number of rail transfers in the selected connection
+    - ``tt_pt``: total rail-based PT duration in minutes
+    - ``transfer``: number of rail transfers in the selected connection
 
 The original demand rows, order, and columns are preserved. The two PT columns
 are appended to the output file, so the output can be used like a regular
@@ -161,7 +161,7 @@ class RailGTFSODTravelTimePreprocessor:
         :param rq_time: request time in seconds
         :param start_node: FleetPy origin network node id
         :param end_node: FleetPy destination network node id
-        :return: tuple (gtfs_total_duration_min, nr_transfers)
+        :return: tuple (tt_pt_minutes, transfer_count)
         """
         if self.time_bin_s > 0:
             effective_rq_time = int(rq_time // self.time_bin_s) * self.time_bin_s
@@ -220,8 +220,8 @@ class RailGTFSODTravelTimePreprocessor:
 
         self.prepare_candidate_cache(demand_to_process)
 
-        gtfs_total_duration_min = []
-        nr_transfers = []
+        pt_travel_times_min = []
+        transfer_counts = []
         progress = tqdm(
             demand_to_process.iterrows(),
             total=len(demand_to_process),
@@ -230,18 +230,18 @@ class RailGTFSODTravelTimePreprocessor:
         )
         for _, row in progress:
             duration_min, transfers = self.compute_request(row["rq_time"], row["start"], row["end"])
-            gtfs_total_duration_min.append(duration_min)
-            nr_transfers.append(transfers)
+            pt_travel_times_min.append(duration_min)
+            transfer_counts.append(transfers)
 
-        demand.loc[demand_to_process.index, "gtfs_total_duration_min"] = gtfs_total_duration_min
-        demand.loc[demand_to_process.index, "nr_transfers"] = nr_transfers
+        demand.loc[demand_to_process.index, "tt_pt"] = pt_travel_times_min
+        demand.loc[demand_to_process.index, "transfer"] = transfer_counts
 
         if output is None:
             base, ext = os.path.splitext(demand_file)
             output = f"{base}_railpt{ext}"
         demand.to_csv(output, index=False)
 
-        found = pd.Series(gtfs_total_duration_min).notna().sum()
+        found = pd.Series(pt_travel_times_min).notna().sum()
         print(f"Processed requests: {len(demand_to_process)}")
         print(f"Rail PT paths found: {found}")
         print(f"Output: {output}")

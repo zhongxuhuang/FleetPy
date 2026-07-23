@@ -1,5 +1,6 @@
 import ast
 import logging
+import math
 import os
 
 import pandas as pd
@@ -112,8 +113,8 @@ class StaticZoneDistancePricing(RoadPricingPolicy):
                 "sim_time": sim_time,
                 "zone_id": zone_id,
                 "pricing_mode": self.policy_name,
-                "k_current": None,
-                "k_critical": None,
+                "avg_speed_mps": None,
+                "critical_speed_mps": None,
                 "toll_coeff": self.static_coefficients.get(zone_id, 0.0),
                 "fallback": "",
             })
@@ -122,7 +123,7 @@ class StaticZoneDistancePricing(RoadPricingPolicy):
 
 
 class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
-    """Density-responsive cents-per-meter toll coefficients by zone."""
+    """MFD-speed-responsive cents-per-meter toll coefficients by zone."""
 
     policy_name = "myopic_mfd"
 
@@ -131,18 +132,9 @@ class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
         self.update_interval = float(scenario_parameters.get(G_RP_UPDATE_INT, 300))
         self.fallback = scenario_parameters.get(G_RP_FALLBACK, "keep")
         self.last_update_time = None
-        self.k_critical = self._load_k_critical()
         self.base_coefficients = self._load_coefficients(G_RP_BASE_TOLL_COEFF, default=0.0)
         self.max_coefficients = self._load_coefficients(G_RP_MAX_TOLL_COEFF, default=float("inf"))
         self.current_coefficients = {}
-
-    def _load_k_critical(self):
-        k_file = self.scenario_parameters.get(G_RP_K_CRIT_F)
-        if k_file is not None and not os.path.isabs(k_file):
-            k_file = os.path.join(self.dir_names.get(G_DIR_ZONES, ""), k_file)
-        k_crit = _read_zone_value_file(k_file, ["k_critical", "critical_density", "critical_k"])
-        k_crit.update(_normalize_zone_mapping(_parse_mapping(self.scenario_parameters.get(G_RP_K_CRIT))))
-        return k_crit
 
     def _load_coefficients(self, parameter_name, default):
         value = self.scenario_parameters.get(parameter_name, default)
@@ -156,38 +148,62 @@ class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
             return True
         return sim_time - self.last_update_time >= self.update_interval
 
+    def _get_critical_speed(self, zone_id):
+        """Return the parabolic-MFD critical speed in metres per second.
+
+        For ``q(k) = v_free * k - gamma * k**2``, maximum flow occurs at
+        ``k_critical = v_free / (2 * gamma)`` and the corresponding speed is
+        ``v_critical = v_free / 2``.  ``NetworkZoneSystem`` retains ``v`` in
+        km/h from the shared ``mfd_parameters.csv`` input.
+        """
+        mfd_parameters = getattr(self.zone_system, "mfd_parameters", {})
+        parameter = mfd_parameters.get(zone_id)
+        if parameter is None:
+            return None
+        try:
+            free_speed_kmh = float(parameter["v"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not math.isfinite(free_speed_kmh) or free_speed_kmh <= 0:
+            return None
+        return free_speed_kmh / 7.2
+
     def update(self, sim_time, routing_engine):
         if not self._is_update_time(sim_time):
             return False
         self.last_update_time = sim_time
-        if hasattr(routing_engine, "_update_current_zone_vehicle_counts"):
-            zone_counts = routing_engine._update_current_zone_vehicle_counts(sim_time)
-        else:
-            zone_counts = getattr(routing_engine, "current_total_zone_vehicle_counts", {})
+        speed_getter = getattr(routing_engine, "get_current_zone_mfd_speeds", None)
+        zone_speeds = speed_getter() if callable(speed_getter) else {}
         records = []
         for zone_id in self.zone_system.get_all_zones():
             fallback_reason = ""
-            k_current = zone_counts.get(zone_id)
-            k_critical = self.k_critical.get(zone_id)
             old_coeff = self.current_coefficients.get(zone_id, 0.0)
-            if k_current is None or k_critical is None or k_critical <= 0:
+            current_speed = zone_speeds.get(zone_id)
+            critical_speed = self._get_critical_speed(zone_id)
+            if critical_speed is None:
                 if self.fallback == "zero":
                     coeff = 0.0
                 else:
                     coeff = old_coeff
-                fallback_reason = "missing_mfd_state"
+                fallback_reason = "missing_mfd_parameters"
+            elif current_speed is None or not math.isfinite(current_speed) or current_speed <= 0:
+                if self.fallback == "zero":
+                    coeff = 0.0
+                else:
+                    coeff = old_coeff
+                fallback_reason = "missing_mfd_speed"
             else:
                 base_coeff = _get_zone_value(self.base_coefficients, zone_id, 0.0)
                 max_coeff = _get_zone_value(self.max_coefficients, zone_id, float("inf"))
-                coeff = base_coeff * max(0.0, float(k_current) / float(k_critical))
+                coeff = base_coeff * critical_speed / current_speed
                 coeff = min(coeff, max_coeff)
             self.current_coefficients[zone_id] = coeff
             records.append({
                 "sim_time": sim_time,
                 "zone_id": zone_id,
                 "pricing_mode": self.policy_name,
-                "k_current": k_current,
-                "k_critical": k_critical,
+                "avg_speed_mps": current_speed,
+                "critical_speed_mps": critical_speed,
                 "toll_coeff": coeff,
                 "fallback": fallback_reason,
             })

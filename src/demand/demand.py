@@ -61,6 +61,7 @@ class Demand:
         self.undecided_rq = {} # rid > rq
         self.waiting_rq = {} # rid > rq
         self.future_requests = {}
+        self.future_background_trips = {}  # rq_time > list of background trip dictionaries
         # optional
         self.zone_definition = zone_system
         self.routing_engine = routing_engine
@@ -97,9 +98,31 @@ class Demand:
         future_requests = tmp_df[(tmp_df[G_RQ_TIME] >= start_time) & (tmp_df[G_RQ_TIME] < end_time)]
         number_rq_1 = future_requests.shape[0]
         future_requests = future_requests[(future_requests[G_RQ_ORIGIN] != future_requests[G_RQ_DESTINATION])]
-        number_rq = future_requests.shape[0]
+        number_valid_trips = future_requests.shape[0]
         future_requests[G_RQ_TIME] = future_requests[G_RQ_TIME] - np.mod(future_requests[G_RQ_TIME],
                                                                          simulation_time_step)
+        # A demand file can optionally mark background traffic with rq_pv == 1. All
+        # other rows, including empty entries and files without this column, remain
+        # ordinary requests.
+        if "rq_pv" in future_requests.columns:
+            background_mask = pd.to_numeric(future_requests["rq_pv"], errors="coerce").eq(1)
+            background_trips = future_requests.loc[background_mask,
+                                                   [G_RQ_TIME, G_RQ_ORIGIN, G_RQ_DESTINATION]].copy()
+            if G_RQ_ID in future_requests.columns:
+                background_trips.insert(0, G_RQ_ID, future_requests.loc[background_mask, G_RQ_ID])
+            else:
+                background_trips.insert(0, G_RQ_ID, background_trips.index)
+            future_requests = future_requests.loc[~background_mask].copy()
+        else:
+            background_trips = pd.DataFrame(columns=[G_RQ_ID, G_RQ_TIME, G_RQ_ORIGIN, G_RQ_DESTINATION])
+        number_background_trips = background_trips.shape[0]
+        number_rq = future_requests.shape[0]
+        for background_time, background_time_df in background_trips.groupby(G_RQ_TIME):
+            new_background_trips = background_time_df.to_dict("records")
+            if background_time in self.future_background_trips:
+                self.future_background_trips[background_time].extend(new_background_trips)
+            else:
+                self.future_background_trips[background_time] = new_background_trips
         # define maximum decision time
         if G_RQ_LDT not in future_requests.columns:
             max_dec_time = self.scenario_parameters[G_AR_MAX_DEC_T]
@@ -117,8 +140,9 @@ class Demand:
                 self.future_requests[rq_time] = new_rq_dict
         LOG.info(f"init(): {number_rq_0 - number_rq_1}/{number_rq_0}"
                  f" requests removed ({G_RQ_TIME} not in simulation time)")
-        LOG.info(f"init(): {number_rq_1 - number_rq}/{number_rq_1}"
+        LOG.info(f"init(): {number_rq_1 - number_valid_trips}/{number_rq_1}"
                  f" requests removed ({G_RQ_ORIGIN} == {G_RQ_DESTINATION})")
+        LOG.info(f"init(): loaded {number_rq} regular requests and {number_background_trips} background trips")
         # LOG.debug(f"self.future_requests = {self.future_requests}")
 
     def load_parcel_demand_file(self, start_time, end_time, parcel_rq_file_dir, parcel_rq_file_name, np_random_seed, parcel_rq_type=None,
@@ -216,6 +240,15 @@ class Demand:
                 list_new_traveler_rid_obj.append((rid, rq))
         LOG.debug(f"{len(list_new_traveler_rid_obj)} new travelers join the simulation at time {simulation_time}.")
         return list_new_traveler_rid_obj
+
+    def get_new_background_trips(self, simulation_time, *, since=None):
+        """Return background trips becoming active in the current simulation interval."""
+        since = since if since is not None else simulation_time - 1
+        new_background_trips = []
+        for t in range(since + 1, simulation_time + 1):
+            new_background_trips.extend(self.future_background_trips.pop(t, []))
+        LOG.debug(f"{len(new_background_trips)} background trips join the network at time {simulation_time}.")
+        return new_background_trips
 
     def get_undecided_travelers(self, simulation_time):
         """This method returns the list of currently undecided requests.
