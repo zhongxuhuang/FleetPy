@@ -170,9 +170,8 @@ class NetworkBasic(NetworkBase):
         self._current_tt_factor = None
         self.travel_time_file_infos = self._load_tt_folder_path(network_dynamics_file_name=network_dynamics_file_name)
         self.loadNetwork(network_name_dir, network_dynamics_file_name=network_dynamics_file_name, scenario_time=scenario_time)
-        # Dynamic MFD updates overwrite edge travel times. Keep the originally loaded
-        # values so zones without an MFD can use one stable, distance-based speed.
-        self._base_edge_infos = self._capture_base_edge_infos()
+        # Dynamic MFD updates only overwrite travel times for zones that provide
+        # an MFD speed. All other edges retain their loaded travel times.
         self.current_dijkstra_number = 1    #used in dijkstra-class
         self.sim_time = 0   # TODO #
         self.zones = None   # TODO #
@@ -182,12 +181,13 @@ class NetworkBasic(NetworkBase):
         self.zone_mfd_functions = {}
         self._zone_to_edge_cache = None
         self._zone_to_edge_cache_zones_id = None
-        self._zone_fallback_speeds = {}
-        self._zone_fallback_speed_zones_id = None
         self._zone_priority_queue_states = {}
         self._queued_route_trips = {}
         self._pv_route_start_events = []
         self._priority_queue_sequence = 0
+        # One row per simulation time and zone, exported once the result
+        # directory is available in FleetSimulationBase.
+        self._zone_speed_time_series = []
         with open(os.sep.join([self.network_name_dir, "base","crs.info"]), "r") as f:
             self.crs = f.read()
         LOG.debug(
@@ -304,6 +304,8 @@ class NetworkBasic(NetworkBase):
                 if self._set_edge_tt(o_node_index, d_node_index, dynamic_tt):
                     changed_edges.append((o_node_index, d_node_index, dynamic_tt))
 
+        self._record_zone_speed_snapshot(simulation_time, zone_speed_summary)
+
         if LOG.isEnabledFor(logging.DEBUG):
             sample = zone_speed_summary[:20]
             LOG.debug(
@@ -326,6 +328,48 @@ class NetworkBasic(NetworkBase):
         )
         return False
 
+    def _record_zone_speed_snapshot(self, simulation_time, zone_speed_summary):
+        """Store the current MFD speed of every mapped zone for result export."""
+        self._zone_speed_time_series = [
+            record for record in self._zone_speed_time_series
+            if record["simulation_time"] != simulation_time
+        ]
+        for zone_id, number_vehicles, avg_speed, _ in zone_speed_summary:
+            self._zone_speed_time_series.append({
+                "simulation_time": simulation_time,
+                "zone_id": zone_id,
+                "vehicle_count": number_vehicles,
+                "avg_speed_mps": avg_speed,
+                "avg_speed_kmh": None if avg_speed is None else avg_speed * 3.6,
+            })
+
+    def get_current_zone_mfd_speeds(self):
+        """Return the latest MFD average speed per zone in network units per second.
+
+        The values are the same speeds most recently used to update the zone's
+        edge travel times.  Consumers such as road-pricing policies can use
+        this read-only snapshot without recalculating MFD states or accessing
+        vehicle counts.
+        """
+        return {
+            record["zone_id"]: record["avg_speed_mps"]
+            for record in self._zone_speed_time_series
+            if record["avg_speed_mps"] is not None
+        }
+
+    def write_zone_speed_timeseries(self, output_file):
+        """Write recorded zone MFD speeds to a result CSV.
+
+        :param output_file: absolute path of ``zone_speed_timeseries.csv``
+        :return: True when a CSV was written, otherwise False
+        """
+        if not self._zone_speed_time_series:
+            return False
+        pd.DataFrame(self._zone_speed_time_series).sort_values(
+            ["simulation_time", "zone_id"]
+        ).to_csv(output_file, index=False)
+        return True
+
     def _after_dynamic_edge_tt_update(self, changed_edges):
         """Runs backend-specific updates after dynamic edge travel times changed.
 
@@ -333,19 +377,6 @@ class NetworkBasic(NetworkBase):
         :return: None
         """
         pass
-
-    def _capture_base_edge_infos(self):
-        """Captures the edge travel times and distances loaded with the network.
-
-        The cache is intentionally created before dynamic MFD updates can modify
-        edge travel times. It is only used to derive a fixed fallback speed for
-        zones that do not provide an MFD speed.
-        """
-        return {
-            (o_node.node_index, d_node.node_index): edge_obj.get_tt_distance()
-            for o_node in self.nodes
-            for d_node, edge_obj in o_node.edges_to.items()
-        }
 
     def _get_edge_distance(self, o_node_index, d_node_index):
         """Returns an edge distance without reading its (possibly dynamic) TT."""
@@ -371,31 +402,14 @@ class NetworkBasic(NetworkBase):
                 zone_to_edges.setdefault(zone_id, []).append((o_node.node_index, d_node.node_index, edge_distance))
         self._zone_to_edge_cache = zone_to_edges
         self._zone_to_edge_cache_zones_id = id(self.zones)
+        if hasattr(self.zones, "set_mfd_network_lengths"):
+            # Edge distances are in metres. MFD fits use density in veh/km.
+            self.zones.set_mfd_network_lengths({
+                zone_id: sum(edge_distance for _, _, edge_distance in edge_infos) / 1000.0
+                for zone_id, edge_infos in zone_to_edges.items()
+            })
         return self._zone_to_edge_cache
 
-    def _initialize_zone_fallback_speeds(self):
-        """Calculates one fixed average speed for every zone from base edge data."""
-        if self.zones is None:
-            return
-        if self._zone_fallback_speed_zones_id == id(self.zones):
-            return
-
-        fallback_speeds = {}
-        for zone_id, edge_infos in self._get_zone_to_edge_cache().items():
-            total_distance = 0.0
-            total_base_tt = 0.0
-            for o_node, d_node, edge_distance in edge_infos:
-                base_info = self._base_edge_infos.get((o_node, d_node))
-                if base_info is None:
-                    continue
-                total_distance += edge_distance
-                total_base_tt += base_info[0]
-            if total_distance > 0 and total_base_tt > 0:
-                fallback_speeds[zone_id] = total_distance / total_base_tt
-        self._zone_fallback_speeds = fallback_speeds
-        self._zone_fallback_speed_zones_id = id(self.zones)
-        LOG.debug(f"initialized fixed fallback zone speeds={fallback_speeds}")
-    
     def reset_network(self, simulation_time: float):
         """ this method is used in case a module changed the travel times to future states for forecasts
         it resets the network to the travel times a stimulation_time
@@ -471,7 +485,7 @@ class NetworkBasic(NetworkBase):
                 "E": 0,  # cumulative number of trips that entered this zone
                 "G": 0,  # cumulative number of trips that completed in this zone
                 "z": 0.0,  # cumulative bathtub progress since initialization
-                "v": 0.0 if avg_speed is None else avg_speed,  # current MFD/fallback zone speed
+                "v": 0.0 if avg_speed is None else avg_speed,  # current MFD zone speed
                 "last_time": init_time,  # last simulation time at which this state was advanced
                 "heap": []  # (completion threshold, sequence, queued route trip id)
             }
@@ -769,12 +783,11 @@ class NetworkBasic(NetworkBase):
         return None
 
     def _get_zone_queue_speed(self, zone_id, number_vehicles):
-        """Returns MFD speed, or the fixed base-edge fallback for this zone."""
+        """Return an MFD speed, or None to retain the loaded edge TT."""
         avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
         if avg_speed is not None and avg_speed > 0:
             return avg_speed
-        self._initialize_zone_fallback_speeds()
-        return self._zone_fallback_speeds.get(zone_id)
+        return None
 
     def set_zone_mfd_function(self, zone_id, mfd_function):
         """Registers an MFD function for one zone.

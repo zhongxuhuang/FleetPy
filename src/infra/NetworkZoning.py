@@ -31,39 +31,133 @@ class NetworkZoneSystem(ZoneSystem):
         self.current_toll_coefficients = {}
         self.current_park_costs = {}
         self.current_park_search_durations = {}
-        self.test_mfd_parameters = self._load_test_mfd_parameters()
+        self.mfd_parameters = self._load_mfd_parameters()
+        # Filled by the routing engine once it has assigned network edges to
+        # zones. The fitted MFDs use density [veh/km], whereas FleetPy tracks
+        # an absolute vehicle count per zone.
+        self.mfd_network_lengths_km = {}
 
-    def _load_test_mfd_parameters(self):
-        """Returns small scenario MFDs used for the Munich reservoir MT tests."""
-        if self.zone_system_name != "Munich_reservoirs":
+    def _load_mfd_parameters(self):
+        """Load optional parabolic MFD parameters from the zone directory.
+
+        The optional ``mfd_parameters.csv`` file must contain ``zone_id``,
+        ``mfd_type``, ``v_kmh``, and ``gamma``. Currently, ``parabolic`` is
+        the only supported MFD type and represents
+        ``q(k) = v_kmh * k - gamma * k**2``.
+        """
+        mfd_parameters_f = os.path.join(self.zone_general_dir, "mfd_parameters.csv")
+        if not os.path.isfile(mfd_parameters_f):
             return {}
+
+        try:
+            mfd_df = pd.read_csv(mfd_parameters_f)
+        except Exception as exc:
+            raise ValueError(
+                f"Could not read MFD parameter file {mfd_parameters_f}: {exc}"
+            ) from exc
+
+        required_columns = {"zone_id", "mfd_type", "v_kmh", "gamma"}
+        missing_columns = required_columns - set(mfd_df.columns)
+        if missing_columns:
+            raise ValueError(
+                f"MFD parameter file {mfd_parameters_f} is missing required "
+                f"columns: {sorted(missing_columns)}"
+            )
+        if mfd_df.empty:
+            return {}
+
+        try:
+            zone_ids = pd.to_numeric(mfd_df["zone_id"], errors="raise")
+            v_kmh = pd.to_numeric(mfd_df["v_kmh"], errors="raise")
+            gamma = pd.to_numeric(mfd_df["gamma"], errors="raise")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"MFD parameter file {mfd_parameters_f} contains non-numeric "
+                "zone_id, v_kmh, or gamma values"
+            ) from exc
+
+        if (
+            not np.isfinite(zone_ids).all()
+            or not np.isfinite(v_kmh).all()
+            or not np.isfinite(gamma).all()
+        ):
+            raise ValueError(
+                f"MFD parameter file {mfd_parameters_f} contains non-finite values"
+            )
+        if not np.equal(zone_ids, np.floor(zone_ids)).all():
+            raise ValueError(
+                f"MFD parameter file {mfd_parameters_f} contains non-integer zone IDs"
+            )
+
+        zone_ids = zone_ids.astype(int)
+        if zone_ids.duplicated().any():
+            duplicates = sorted(zone_ids[zone_ids.duplicated()].unique().tolist())
+            raise ValueError(
+                f"MFD parameter file {mfd_parameters_f} contains duplicate zone IDs: "
+                f"{duplicates}"
+            )
+        unknown_zone_ids = sorted(set(zone_ids) - set(self.zones))
+        if unknown_zone_ids:
+            raise ValueError(
+                f"MFD parameter file {mfd_parameters_f} references unknown zone IDs: "
+                f"{unknown_zone_ids}"
+            )
+        if (v_kmh <= 0).any() or (gamma <= 0).any():
+            raise ValueError(
+                f"MFD parameter file {mfd_parameters_f} requires v_kmh and gamma to be positive"
+            )
+
+        mfd_types = mfd_df["mfd_type"].astype(str).str.strip().str.lower()
+        unsupported_mfd_types = sorted(set(mfd_types) - {"parabolic"})
+        if unsupported_mfd_types:
+            raise ValueError(
+                f"MFD parameter file {mfd_parameters_f} contains unsupported MFD types: "
+                f"{unsupported_mfd_types}"
+            )
+
         return {
-            # free_flow_speed, minimum_speed in m/s; k_critical is counted vehicles in the zone.
-            0: {"free_flow_speed": 13.5, "minimum_speed": 3.5, "k_critical": 45.0, "shape": 1.7},
-            1: {"free_flow_speed": 12.0, "minimum_speed": 2.8, "k_critical": 35.0, "shape": 1.8},
-            2: {"free_flow_speed": 14.5, "minimum_speed": 4.0, "k_critical": 55.0, "shape": 1.6},
-            3: {"free_flow_speed": 11.5, "minimum_speed": 2.5, "k_critical": 28.0, "shape": 1.9},
-            4: {"free_flow_speed": 8.5, "minimum_speed": 1.2, "k_critical": 15.0, "shape": 2.1},
+            zone_id: {
+                "mfd_type": mfd_type,
+                "v": float(v),
+                "gamma": float(gamma_value),
+            }
+            for zone_id, mfd_type, v, gamma_value in zip(zone_ids, mfd_types, v_kmh, gamma)
+        }
+
+    def set_mfd_network_lengths(self, network_lengths_km):
+        """Set zone road lengths used to convert vehicle counts to density.
+
+        :param network_lengths_km: mapping of zone id to assigned directed
+            road length in kilometres
+        :type network_lengths_km: dict
+        """
+        self.mfd_network_lengths_km = {
+            zone_id: float(length)
+            for zone_id, length in network_lengths_km.items()
+            if length is not None and np.isfinite(length) and length > 0
         }
 
     def get_mfd_average_speed(self, zone_id, number_vehicles):
-        """Returns the test MFD speed for Munich reservoirs 0-4.
+        """Return the configured MFD average speed in m/s.
 
-        Zone 5 intentionally returns None so that the routing engine keeps the
-        original static edge travel times outside the reservoirs.
+        The routing engine provides a total zone vehicle count. It is converted
+        to density using the assigned zone road length, then the fitted
+        relation is evaluated as ``speed = q(k) / k = v - gamma * k``.
+        A small positive speed at and beyond jam density keeps edge travel
+        times finite.
         """
-        params = self.test_mfd_parameters.get(zone_id)
+        params = self.mfd_parameters.get(zone_id)
         if params is None:
             return None
+
+        network_length_km = self.mfd_network_lengths_km.get(zone_id)
+        if network_length_km is None:
+            return None
+
         number_vehicles = max(float(number_vehicles), 0.0)
-        free_flow_speed = params["free_flow_speed"]
-        minimum_speed = params["minimum_speed"]
-        k_critical = params["k_critical"]
-        shape = params["shape"]
-        speed = minimum_speed + (free_flow_speed - minimum_speed) * np.exp(
-            -((number_vehicles / k_critical) ** shape)
-        )
-        return max(speed, minimum_speed)
+        density = number_vehicles / network_length_km
+        speed_kmh = params["v"] - params["gamma"] * density
+        return max(speed_kmh / 3.6, 0.1)
 
     def check_first_last_mile_option(self, o_node, d_node):
         """This method checks whether first/last mile service should be offered in a given zone.

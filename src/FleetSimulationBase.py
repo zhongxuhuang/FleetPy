@@ -667,6 +667,11 @@ class FleetSimulationBase:
         if self.skip_output:
             return
 
+        if hasattr(self.routing_engine, "write_zone_speed_timeseries"):
+            self.routing_engine.write_zone_speed_timeseries(
+                os.path.join(self.dir_names[G_DIR_OUTPUT], "zone_speed_timeseries.csv")
+            )
+
         self.demand.save_user_stats(force)
         for op_id in range(self.n_op):
             current_buffer_size = len(self.op_output[op_id])
@@ -755,6 +760,36 @@ class FleetSimulationBase:
         """
         for opid_vid_tuple, veh_obj in self.sim_vehicles.items():
             veh_obj.update_route()
+
+    def _assign_new_background_routes(self, sim_time, *, since=None):
+        """Assign demand-file background traffic to the network priority queues."""
+        if not hasattr(self.demand, "get_new_background_trips"):
+            return
+        background_trips = self.demand.get_new_background_trips(sim_time, since=since)
+        for background_trip in background_trips:
+            trip_id = background_trip.get(G_RQ_ID)
+            trip_time = background_trip[G_RQ_TIME]
+            origin = background_trip[G_RQ_ORIGIN]
+            destination = background_trip[G_RQ_DESTINATION]
+            try:
+                origin_position = self.routing_engine.return_node_position(origin)
+                destination_position = self.routing_engine.return_node_position(destination)
+                route = self.routing_engine.return_best_route_1to1(origin_position, destination_position)
+                if not route or len(route) < 2:
+                    LOG.warning(
+                        f"background trip skipped id={trip_id} time={trip_time} origin={origin} "
+                        f"destination={destination}: route is too short"
+                    )
+                    continue
+                arrival_time, _ = self.routing_engine.return_route_infos(route, 0.0, trip_time)
+                self.routing_engine.assign_route_to_network(route, trip_time, arrival_time, 1)
+            except (IndexError, KeyError, ValueError) as error:
+                LOG.warning(
+                    f"background trip skipped id={trip_id} time={trip_time} origin={origin} "
+                    f"destination={destination}: {error}"
+                )
+        if background_trips:
+            LOG.info(f"assigned {len(background_trips)} background trips to the network at time {sim_time}")
 
     def _rid_chooses_offer(self, rid, rq_obj, sim_time):
         """This method performs all actions that derive from a mode choice decision.

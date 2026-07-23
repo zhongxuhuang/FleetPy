@@ -227,6 +227,48 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
         self.sim_time = simulation_time
         self.pos_veh_dict = {}  # pos -> list_veh
 
+    def inform_network_travel_time_update(self, simulation_time: int):
+        """Refresh active routes and committed plans after a network TT update.
+
+        Confirmed requests remain assigned to their current vehicles. The
+        refreshed plan can become infeasible under the new travel times; in
+        that case ``keep_feasible`` preserves its stop sequence rather than
+        cancelling or reassigning a customer.
+        """
+        self.sim_time = simulation_time
+        rerouted_vehicles = 0
+        refreshed_plans = 0
+        infeasible_plans = 0
+
+        for veh_obj in self.sim_vehicles:
+            vid = veh_obj.vid
+            if veh_obj.assigned_route:
+                veh_obj.update_route()
+                rerouted_vehicles += 1
+
+            veh_plan = self.veh_plans[vid]
+            if not veh_plan.list_plan_stops:
+                continue
+
+            is_feasible = veh_plan.update_tt_and_check_plan(
+                veh_obj, simulation_time, self.routing_engine, keep_feasible=True
+            )
+            veh_plan.set_utility(
+                self.compute_VehiclePlan_utility(simulation_time, veh_obj, veh_plan)
+            )
+            refreshed_plans += 1
+            if not is_feasible:
+                infeasible_plans += 1
+
+        LOG.info(
+            "network TT update t=%s: rerouted %s active vehicles, refreshed %s "
+            "committed plans, retained %s infeasible plans",
+            simulation_time,
+            rerouted_vehicles,
+            refreshed_plans,
+            infeasible_plans,
+        )
+
     def compute_VehiclePlan_utility(self, simulation_time, veh_obj, vehicle_plan):
         """This method computes the utility of a given plan and returns the value.
 

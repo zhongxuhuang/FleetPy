@@ -2,6 +2,7 @@
 # standard distribution imports
 # -----------------------------
 import logging
+import math
 import os
 import random
 from copy import deepcopy
@@ -89,6 +90,7 @@ class RequestBase(metaclass=ABCMeta):
         self.t_egress = None
         self.fare = None
         self.toll = 0
+        self.park_cost = 0
         # direct_route_infos
         self.direct_route_travel_time = None
         self.direct_route_travel_distance = None
@@ -174,6 +176,7 @@ class RequestBase(metaclass=ABCMeta):
         record_dict[G_RQ_DO] = self.do_time
         record_dict[G_RQ_FARE] = self.fare
         record_dict[G_RQ_TOLL] = self.toll
+        record_dict[G_RQ_PARK] = self.park_cost
         record_dict[G_RQ_MODAL_STATE] = self.modal_state
         return self._add_record(record_dict)
 
@@ -702,9 +705,9 @@ class UserUtilityRequest(RequestBase):
 # ---------------------------------------------------------------------------
 
 INPUT_PARAMETERS_PTUtilityRequest = {
-    "doc": "Compute a simple PT utility from GTFS total duration: U0 - alpha * gtfs_total_duration_min",
+    "doc": "Compute a simple PT utility from demand column tt_pt (minutes): ASC_PT - alpha * tt_pt",
     "inherit": "RequestBase",
-    "input_parameters_mandatory": ["U_0_T", "alpha_t_P"],  # scenario parameters for PT utility calculation
+    "input_parameters_mandatory": [G_MC_ASC_PT, "alpha_t_P"],  # scenario parameters for PT utility calculation
     "input_parameters_optional": [],
     "mandatory_modules": [],
     "optional_modules": []
@@ -720,22 +723,22 @@ class PTUtilityRequest(RequestBase):
 
     def __init__(self, rq_row, routing_engine, simulation_time_step, scenario_parameters):
         super().__init__(rq_row, routing_engine, simulation_time_step, scenario_parameters)
-        # Read GTFS total duration (in minutes) from the request row; support missing value
-        gtfs_dur = rq_row.get('gtfs_total_duration_min', None)
-        if gtfs_dur is None:
-            raise KeyError(f"Missing data column 'gtfs_total_duration_min' in request file!")
+        # tt_pt is the PT travel time in minutes in the demand schema.
+        pt_travel_time = rq_row.get('tt_pt', None)
+        if pt_travel_time is None:
+            raise KeyError("Missing data column 'tt_pt' in request file!")
 
         # Scenario parameter keys: try a few reasonable names, but require them to be present (no defaults)
-        # U0: base PT utility
-        U0 = None
-        U0_keys = ['U_0_T']
-        for key in U0_keys:
+        # PT ASC: base PT utility
+        pt_asc = None
+        pt_asc_keys = [G_MC_ASC_PT]
+        for key in pt_asc_keys:
             if key in scenario_parameters:
-                U0 = scenario_parameters.get(key)
+                pt_asc = scenario_parameters.get(key)
                 break
-        if U0 is None:
+        if pt_asc is None:
             raise KeyError(
-                f"Missing required scenario parameter for PT base utility. One of {U0_keys} must be set in your scenario configuration (e.g. 'pt_u0' or 'U_0_T').")
+                f"Missing required scenario parameter for PT ASC. Set '{G_MC_ASC_PT}' in the scenario configuration.")
 
         # alpha: per-minute penalty for PT travel time
         alpha_t_p = None
@@ -750,7 +753,7 @@ class PTUtilityRequest(RequestBase):
 
         self.highest_mod_utility = float("-inf")
         # compute PT utility
-        self.pt_utility: float = float(U0) - float(alpha_t_p) * float(gtfs_dur)
+        self.pt_utility: float = float(pt_asc) - float(alpha_t_p) * float(pt_travel_time)
 
 
         # set MOD sensitivity coefficients (considering units: in config per min, from FleetPy in seconds)
@@ -794,9 +797,9 @@ INPUT_PARAMETERS_MultinomialLogitRequest = {
     "doc": "Uses a multinomial logit model to determine the selected choice. "
            "All time terms use beta_time and all monetary terms use beta_money.",
     "inherit": "RequestBase",
-    "input_parameters_mandatory": [G_MC_U0_PV, G_MC_BETA_TIME, G_MC_BETA_MONEY,
-                                   G_MC_C_D_PV, G_WALKING_SPEED],
-    "input_parameters_optional": [G_MC_LOG_DISP_FACTOR, G_MC_U0_BIKE, G_BIKING_SPEED],
+    "input_parameters_mandatory": [G_MC_BETA_TIME, G_MC_BETA_MONEY, G_MC_C_D_PV, G_WALKING_SPEED],
+    "input_parameters_optional": [G_MC_LOG_DISP_FACTOR, G_MC_ASC_PV, G_MC_ASC_BIKE, G_MC_ASC_MOD,
+                                  G_MC_ASC_WALK, G_MC_ASC_BY_DISTANCE, G_MC_C_P_PV, G_BIKING_SPEED],
     "mandatory_modules": [],
     "optional_modules": []
 }
@@ -809,6 +812,25 @@ class MultinomialLogitRequest(RequestBase):
     or can fall back to scenario-specific coefficients.
     """
     type = "MultinomialLogitRequest"
+
+    _DISTANCE_ASC_BINS = (
+        ("under_0_5_km", 500.0),
+        ("0_5_to_under_1_km", 1000.0),
+        ("1_to_under_2_km", 2000.0),
+        ("2_to_under_5_km", 5000.0),
+        ("5_to_under_10_km", 10000.0),
+        ("10_to_under_20_km", 20000.0),
+        ("20_to_under_50_km", 50000.0),
+        ("50_to_under_100_km", 100000.0),
+        ("100_km_and_more", math.inf),
+    )
+    _DISTANCE_ASC_MODE_KEYS = {
+        "pv": G_MC_ASC_PV,
+        "walk": G_MC_ASC_WALK,
+        "bike": G_MC_ASC_BIKE,
+        "pt": G_MC_ASC_PT,
+        "mod": G_MC_ASC_MOD,
+    }
 
     def __init__(self, rq_row, routing_engine, simulation_time_step, scenario_parameters):
         super().__init__(rq_row, routing_engine, simulation_time_step, scenario_parameters)
@@ -825,6 +847,8 @@ class MultinomialLogitRequest(RequestBase):
             if self._is_valid_parameter_value(agent_value):
                 self.mc_pars[mandatory_par] = agent_value
         for optional_par in INPUT_PARAMETERS_MultinomialLogitRequest["input_parameters_optional"]:
+            if optional_par == G_MC_ASC_BY_DISTANCE:
+                continue
             # test if uniform scenario parameter is given
             uniform_val = scenario_parameters.get(optional_par, None)
             if self._is_valid_parameter_value(uniform_val):
@@ -833,6 +857,10 @@ class MultinomialLogitRequest(RequestBase):
             agent_value = rq_row.get(optional_par, None)
             if self._is_valid_parameter_value(agent_value):
                 self.mc_pars[optional_par] = agent_value
+        self.distance_asc_by_distance = self._validate_distance_asc_table(
+            scenario_parameters.get(G_MC_ASC_BY_DISTANCE)
+        )
+        self._scalar_pt_asc = scenario_parameters.get(G_MC_ASC_PT)
         # compute direct route information
         self.set_direct_route_travel_infos(routing_engine)
         self._apply_precomputed_direct_route_infos()
@@ -856,6 +884,89 @@ class MultinomialLogitRequest(RequestBase):
             if self._is_valid_parameter_value(value):
                 return value
         return None
+
+    @classmethod
+    def _validate_distance_asc_table(cls, distance_asc_table):
+        """Validate and normalize an optional full-ASC table indexed by distance band."""
+        if distance_asc_table is None:
+            return None
+        if not isinstance(distance_asc_table, dict):
+            raise ValueError(f"{G_MC_ASC_BY_DISTANCE} must be a mapping of distance bands to ASC mappings.")
+
+        required_bins = {bin_name for bin_name, _ in cls._DISTANCE_ASC_BINS}
+        provided_bins = set(distance_asc_table)
+        missing_bins = required_bins - provided_bins
+        extra_bins = provided_bins - required_bins
+        if missing_bins or extra_bins:
+            problems = []
+            if missing_bins:
+                problems.append(f"missing distance bands: {', '.join(sorted(missing_bins))}")
+            if extra_bins:
+                problems.append(f"unknown distance bands: {', '.join(sorted(extra_bins))}")
+            raise ValueError(f"Invalid {G_MC_ASC_BY_DISTANCE}: {'; '.join(problems)}.")
+
+        required_modes = set(cls._DISTANCE_ASC_MODE_KEYS)
+        normalized_table = {}
+        for bin_name, _ in cls._DISTANCE_ASC_BINS:
+            band_values = distance_asc_table[bin_name]
+            if not isinstance(band_values, dict):
+                raise ValueError(
+                    f"{G_MC_ASC_BY_DISTANCE}.{bin_name} must map the modes {sorted(required_modes)} to ASC values."
+                )
+            provided_modes = set(band_values)
+            missing_modes = required_modes - provided_modes
+            extra_modes = provided_modes - required_modes
+            if missing_modes or extra_modes:
+                problems = []
+                if missing_modes:
+                    problems.append(f"missing modes: {', '.join(sorted(missing_modes))}")
+                if extra_modes:
+                    problems.append(f"unknown modes: {', '.join(sorted(extra_modes))}")
+                raise ValueError(
+                    f"Invalid {G_MC_ASC_BY_DISTANCE}.{bin_name}: {'; '.join(problems)}."
+                )
+            normalized_table[bin_name] = {}
+            for mode_name in cls._DISTANCE_ASC_MODE_KEYS:
+                try:
+                    asc = float(band_values[mode_name])
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"{G_MC_ASC_BY_DISTANCE}.{bin_name}.{mode_name} must be a finite numeric ASC value."
+                    ) from None
+                if not math.isfinite(asc):
+                    raise ValueError(
+                        f"{G_MC_ASC_BY_DISTANCE}.{bin_name}.{mode_name} must be a finite numeric ASC value."
+                    )
+                normalized_table[bin_name][mode_name] = asc
+        return normalized_table
+
+    def _get_distance_asc_band(self):
+        """Return the configured ASC band for this request's direct-route distance in metres."""
+        try:
+            direct_distance = float(self.direct_route_travel_distance)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Cannot select {G_MC_ASC_BY_DISTANCE}: direct_route_distance must be a finite non-negative value in metres."
+            ) from None
+        if not math.isfinite(direct_distance) or direct_distance < 0:
+            raise ValueError(
+                f"Cannot select {G_MC_ASC_BY_DISTANCE}: direct_route_distance must be a finite non-negative value in metres."
+            )
+        for bin_name, upper_bound in self._DISTANCE_ASC_BINS:
+            if direct_distance < upper_bound:
+                return bin_name
+        raise RuntimeError("No distance ASC band matched the direct-route distance.")
+
+    def _get_mode_choice_asc(self, mode_name):
+        """Return the full ASC for one mode, optionally selected from the direct-distance table."""
+        if mode_name not in self._DISTANCE_ASC_MODE_KEYS:
+            raise KeyError(f"Unknown mode-choice ASC mode '{mode_name}'.")
+        if self.distance_asc_by_distance is not None:
+            return self.distance_asc_by_distance[self._get_distance_asc_band()][mode_name]
+        if mode_name == "pt":
+            return 0.0 if self._scalar_pt_asc is None else float(self._scalar_pt_asc)
+        scalar_asc = self.mc_pars.get(self._DISTANCE_ASC_MODE_KEYS[mode_name])
+        return 0.0 if scalar_asc is None else float(scalar_asc)
 
     def _apply_precomputed_direct_route_infos(self):
         """Use precomputed PV/direct route attributes from the demand row if available."""
@@ -886,19 +997,21 @@ class MultinomialLogitRequest(RequestBase):
         direct_distance = float(self.direct_route_travel_distance)
         direct_time = float(self.direct_route_travel_time)
         pv_distance_cost = float(self.mc_pars[G_MC_C_D_PV]) * direct_distance
+        self.current_pv_parking_fare = float(self.mc_pars.get(G_MC_C_P_PV, 0))
         self.current_pv_toll = self._compute_pv_toll(simulation_time)
 
         utils[G_MC_DEC_PV] = (
-            float(self.mc_pars[G_MC_U0_PV])
+            self._get_mode_choice_asc("pv")
             - beta_time * direct_time
-            - beta_money * (pv_distance_cost + self.current_pv_toll)
+            - beta_money * (pv_distance_cost + self.current_pv_toll + self.current_pv_parking_fare)
         )
 
         walking_speed = float(self.mc_pars[G_WALKING_SPEED])
         if walking_speed <= 0:
             raise ValueError(f"{G_WALKING_SPEED} must be greater than zero for {self.type}.")
         walk_time = direct_distance / walking_speed
-        utils[G_MC_DEC_WALK] = -beta_time * walk_time
+        walk_intercept = self._get_mode_choice_asc("walk")
+        utils[G_MC_DEC_WALK] = walk_intercept - beta_time * walk_time
 
         biking_speed = self.mc_pars.get(G_BIKING_SPEED)
         if self._is_valid_parameter_value(biking_speed):
@@ -906,7 +1019,7 @@ class MultinomialLogitRequest(RequestBase):
             if biking_speed <= 0:
                 raise ValueError(f"{G_BIKING_SPEED} must be greater than zero for {self.type}.")
             bike_time = direct_distance / biking_speed
-            bike_intercept = float(self.mc_pars.get(G_MC_U0_BIKE, 0))
+            bike_intercept = self._get_mode_choice_asc("bike")
             utils[G_MC_DEC_BIKE] = bike_intercept - beta_time * bike_time
 
         return utils
@@ -914,29 +1027,27 @@ class MultinomialLogitRequest(RequestBase):
     def _compute_pt_utility(self, scenario_parameters):
         """Compute PT utility if PT data is already attached to the request.
 
-        TODO: PT travel time is not generated here; add gtfs_total_duration_min or pt_utility
+        TODO: PT travel time is not generated here; add tt_pt or pt_utility
         to the demand file/preprocessing later to activate PT in this MNL choice set.
         """
         pt_utility = self.rq_row.get('pt_utility', None)
         if self._is_valid_parameter_value(pt_utility):
             return {G_MC_DEC_PT: float(pt_utility)}
 
-        gtfs_dur = self.rq_row.get('gtfs_total_duration_min', None)
-        if not self._is_valid_parameter_value(gtfs_dur):
+        pt_travel_time = self.rq_row.get('tt_pt', None)
+        if not self._is_valid_parameter_value(pt_travel_time):
             return {}
 
-        pt_intercept = scenario_parameters.get('U_0_T', None)
-        if not self._is_valid_parameter_value(pt_intercept):
-            return {}
+        pt_intercept = self._get_mode_choice_asc("pt")
 
         beta_time = float(self.mc_pars[G_MC_BETA_TIME])
         beta_money = float(self.mc_pars[G_MC_BETA_MONEY])
-        # GTFS duration is stored in minutes while all other time inputs are seconds.
-        utility = float(pt_intercept) - beta_time * float(gtfs_dur) * 60
+        # tt_pt is stored in minutes while all other time inputs are seconds.
+        utility = float(pt_intercept) - beta_time * float(pt_travel_time) * 60
         pt_fare = scenario_parameters.get(G_PT_FARE_B, 0)
         if self._is_valid_parameter_value(pt_fare):
             utility -= beta_money * float(pt_fare)
-        nr_transfers = self.rq_row.get(G_OFFER_TRANSFERS, None)
+        nr_transfers = self.rq_row.get('transfer', None)
         transfer_penalty = scenario_parameters.get(G_MC_TRANSFER_P, None)
         if self._is_valid_parameter_value(nr_transfers) and self._is_valid_parameter_value(transfer_penalty):
             utility -= float(transfer_penalty) * float(nr_transfers)
@@ -947,6 +1058,7 @@ class MultinomialLogitRequest(RequestBase):
         utils = {}
         beta_time = float(self.mc_pars[G_MC_BETA_TIME])
         beta_money = float(self.mc_pars[G_MC_BETA_MONEY])
+        mod_intercept = self._get_mode_choice_asc("mod")
         for op_id, offer in self.offer.items():
             if not offer.service_declined():
                 t_wait = float(offer[G_OFFER_WAIT])
@@ -955,7 +1067,7 @@ class MultinomialLogitRequest(RequestBase):
                 if not self._is_valid_parameter_value(fare):
                     fare = 0
                 fare = float(fare)
-                utils[op_id] = -beta_time * (t_wait + t_drive) - beta_money * fare
+                utils[op_id] = mod_intercept - beta_time * (t_wait + t_drive) - beta_money * fare
         return utils
 
     def _compute_mode_choice_probabilities(self, utilities):
@@ -990,9 +1102,11 @@ class MultinomialLogitRequest(RequestBase):
         elif self.chosen_operator_id == G_MC_DEC_PV:
             self.fare = 0
             self.toll = self.current_pv_toll
+            self.park_cost = self.current_pv_parking_fare
         else:
             self.fare = 0
             self.toll = 0
+            self.park_cost = 0
         return self.chosen_operator_id
 
     def _add_record(self, record_dict):

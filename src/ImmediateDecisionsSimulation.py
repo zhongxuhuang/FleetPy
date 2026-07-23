@@ -85,6 +85,7 @@ class ImmediateDecisionsSimulation(FleetSimulationBase):
         last_time = sim_time - self.time_step
         if last_time < self.start_time:
             last_time = None
+        self._assign_new_background_routes(sim_time, since=last_time)
         list_new_traveler_rid_obj = self.demand.get_new_travelers(sim_time, since=last_time)
         # 3)
         decision_counts = {}
