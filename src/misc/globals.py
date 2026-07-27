@@ -154,7 +154,6 @@ G_MC_ASC_BIKE = "mode_choice_asc_bike"
 G_MC_ASC_PT = "mode_choice_asc_pt"
 G_MC_ASC_MOD = "mode_choice_asc_mod"
 G_MC_ASC_WALK = "mode_choice_asc_walk"
-G_MC_ASC_BY_DISTANCE = "mode_choice_asc_by_distance"
 G_MC_LOG_DISP_FACTOR = "log_alpha"
 
 # traveler specific attributes
@@ -510,6 +509,7 @@ G_RQ_MODAL_STATE = "modal_state" # (see traveler modal state -> indicates monomo
 # ---------------------------
 G_RQ_DRT = "direct_route_travel_time"
 G_RQ_DRD = "direct_route_distance"
+G_RQ_SELECTED_MODE_TT = "selected_mode_travel_time"
 G_RQ_TRD = "traveled_route_distance"
 G_RQ_SRD = "shared_route_distances"
 G_RQ_SUB = "included_subsidy"

@@ -113,8 +113,9 @@ class StaticZoneDistancePricing(RoadPricingPolicy):
                 "sim_time": sim_time,
                 "zone_id": zone_id,
                 "pricing_mode": self.policy_name,
-                "avg_speed_mps": None,
-                "critical_speed_mps": None,
+                "vehicle_count": None,
+                "density_veh_per_km": None,
+                "critical_density_veh_per_km": None,
                 "toll_coeff": self.static_coefficients.get(zone_id, 0.0),
                 "fallback": "",
             })
@@ -123,7 +124,13 @@ class StaticZoneDistancePricing(RoadPricingPolicy):
 
 
 class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
-    """MFD-speed-responsive cents-per-meter toll coefficients by zone."""
+    """MFD-density-responsive cents-per-metre toll coefficients by zone.
+
+    The coefficient is linear in the density ratio, so it is below the base
+    coefficient in uncongested conditions, equals it at critical density, and
+    rises above it after the MFD maximum-flow point.  ``rp_max_toll_coeff``
+    limits that increase.
+    """
 
     policy_name = "myopic_mfd"
 
@@ -148,13 +155,13 @@ class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
             return True
         return sim_time - self.last_update_time >= self.update_interval
 
-    def _get_critical_speed(self, zone_id):
-        """Return the parabolic-MFD critical speed in metres per second.
+    def _get_critical_density(self, zone_id):
+        """Return the parabolic-MFD critical density in vehicles per kilometre.
 
         For ``q(k) = v_free * k - gamma * k**2``, maximum flow occurs at
-        ``k_critical = v_free / (2 * gamma)`` and the corresponding speed is
-        ``v_critical = v_free / 2``.  ``NetworkZoneSystem`` retains ``v`` in
-        km/h from the shared ``mfd_parameters.csv`` input.
+        ``k_critical = v_free / (2 * gamma)``. ``NetworkZoneSystem`` retains
+        ``v_free`` in km/h and ``gamma`` in the units used by the shared
+        ``mfd_parameters.csv`` input, yielding critical density in veh/km.
         """
         mfd_parameters = getattr(self.zone_system, "mfd_parameters", {})
         parameter = mfd_parameters.get(zone_id)
@@ -162,48 +169,76 @@ class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
             return None
         try:
             free_speed_kmh = float(parameter["v"])
+            gamma = float(parameter["gamma"])
         except (KeyError, TypeError, ValueError):
             return None
-        if not math.isfinite(free_speed_kmh) or free_speed_kmh <= 0:
+        if (
+            not math.isfinite(free_speed_kmh)
+            or not math.isfinite(gamma)
+            or free_speed_kmh <= 0
+            or gamma <= 0
+        ):
             return None
-        return free_speed_kmh / 7.2
+        return free_speed_kmh / (2.0 * gamma)
 
     def update(self, sim_time, routing_engine):
         if not self._is_update_time(sim_time):
             return False
         self.last_update_time = sim_time
-        speed_getter = getattr(routing_engine, "get_current_zone_mfd_speeds", None)
-        zone_speeds = speed_getter() if callable(speed_getter) else {}
+        count_getter = getattr(routing_engine, "get_current_zone_vehicle_counts", None)
+        zone_vehicle_counts = count_getter() if callable(count_getter) else None
+        zone_lengths_km = getattr(self.zone_system, "mfd_network_lengths_km", {})
         records = []
         for zone_id in self.zone_system.get_all_zones():
             fallback_reason = ""
             old_coeff = self.current_coefficients.get(zone_id, 0.0)
-            current_speed = zone_speeds.get(zone_id)
-            critical_speed = self._get_critical_speed(zone_id)
-            if critical_speed is None:
+            vehicle_count = None
+            density = None
+            critical_density = self._get_critical_density(zone_id)
+            if critical_density is None:
                 if self.fallback == "zero":
                     coeff = 0.0
                 else:
                     coeff = old_coeff
                 fallback_reason = "missing_mfd_parameters"
-            elif current_speed is None or not math.isfinite(current_speed) or current_speed <= 0:
+            elif zone_vehicle_counts is None:
                 if self.fallback == "zero":
                     coeff = 0.0
                 else:
                     coeff = old_coeff
-                fallback_reason = "missing_mfd_speed"
+                fallback_reason = "missing_zone_vehicle_counts"
             else:
-                base_coeff = _get_zone_value(self.base_coefficients, zone_id, 0.0)
-                max_coeff = _get_zone_value(self.max_coefficients, zone_id, float("inf"))
-                coeff = base_coeff * critical_speed / current_speed
-                coeff = min(coeff, max_coeff)
+                network_length_km = zone_lengths_km.get(zone_id)
+                vehicle_count = zone_vehicle_counts.get(zone_id, 0.0)
+                try:
+                    vehicle_count = max(float(vehicle_count), 0.0)
+                    network_length_km = float(network_length_km)
+                except (TypeError, ValueError):
+                    network_length_km = None
+                if (
+                    network_length_km is None
+                    or not math.isfinite(network_length_km)
+                    or network_length_km <= 0
+                    or not math.isfinite(vehicle_count)
+                ):
+                    if self.fallback == "zero":
+                        coeff = 0.0
+                    else:
+                        coeff = old_coeff
+                    fallback_reason = "missing_mfd_network_length"
+                else:
+                    density = vehicle_count / network_length_km
+                    base_coeff = _get_zone_value(self.base_coefficients, zone_id, 0.0)
+                    max_coeff = _get_zone_value(self.max_coefficients, zone_id, float("inf"))
+                    coeff = min(base_coeff * density / critical_density, max_coeff)
             self.current_coefficients[zone_id] = coeff
             records.append({
                 "sim_time": sim_time,
                 "zone_id": zone_id,
                 "pricing_mode": self.policy_name,
-                "avg_speed_mps": current_speed,
-                "critical_speed_mps": critical_speed,
+                "vehicle_count": vehicle_count,
+                "density_veh_per_km": density,
+                "critical_density_veh_per_km": critical_density,
                 "toll_coeff": coeff,
                 "fallback": fallback_reason,
             })

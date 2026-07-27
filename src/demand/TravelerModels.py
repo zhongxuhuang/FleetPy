@@ -2,7 +2,6 @@
 # standard distribution imports
 # -----------------------------
 import logging
-import math
 import os
 import random
 from copy import deepcopy
@@ -94,6 +93,7 @@ class RequestBase(metaclass=ABCMeta):
         # direct_route_infos
         self.direct_route_travel_time = None
         self.direct_route_travel_distance = None
+        self.selected_mode_travel_time = None
         # 
         self.modal_state = G_RQ_STATE_MONOMODAL # mono-modal trip by default 
 
@@ -798,8 +798,8 @@ INPUT_PARAMETERS_MultinomialLogitRequest = {
            "All time terms use beta_time and all monetary terms use beta_money.",
     "inherit": "RequestBase",
     "input_parameters_mandatory": [G_MC_BETA_TIME, G_MC_BETA_MONEY, G_MC_C_D_PV, G_WALKING_SPEED],
-    "input_parameters_optional": [G_MC_LOG_DISP_FACTOR, G_MC_ASC_PV, G_MC_ASC_BIKE, G_MC_ASC_MOD,
-                                  G_MC_ASC_WALK, G_MC_ASC_BY_DISTANCE, G_MC_C_P_PV, G_BIKING_SPEED],
+    "input_parameters_optional": [G_MC_LOG_DISP_FACTOR, G_MC_ASC_PV, G_MC_ASC_BIKE, G_MC_ASC_PT,
+                                  G_MC_ASC_MOD, G_MC_ASC_WALK, G_MC_C_P_PV, G_BIKING_SPEED],
     "mandatory_modules": [],
     "optional_modules": []
 }
@@ -813,18 +813,7 @@ class MultinomialLogitRequest(RequestBase):
     """
     type = "MultinomialLogitRequest"
 
-    _DISTANCE_ASC_BINS = (
-        ("under_0_5_km", 500.0),
-        ("0_5_to_under_1_km", 1000.0),
-        ("1_to_under_2_km", 2000.0),
-        ("2_to_under_5_km", 5000.0),
-        ("5_to_under_10_km", 10000.0),
-        ("10_to_under_20_km", 20000.0),
-        ("20_to_under_50_km", 50000.0),
-        ("50_to_under_100_km", 100000.0),
-        ("100_km_and_more", math.inf),
-    )
-    _DISTANCE_ASC_MODE_KEYS = {
+    _MODE_CHOICE_ASC_KEYS = {
         "pv": G_MC_ASC_PV,
         "walk": G_MC_ASC_WALK,
         "bike": G_MC_ASC_BIKE,
@@ -847,8 +836,6 @@ class MultinomialLogitRequest(RequestBase):
             if self._is_valid_parameter_value(agent_value):
                 self.mc_pars[mandatory_par] = agent_value
         for optional_par in INPUT_PARAMETERS_MultinomialLogitRequest["input_parameters_optional"]:
-            if optional_par == G_MC_ASC_BY_DISTANCE:
-                continue
             # test if uniform scenario parameter is given
             uniform_val = scenario_parameters.get(optional_par, None)
             if self._is_valid_parameter_value(uniform_val):
@@ -857,10 +844,6 @@ class MultinomialLogitRequest(RequestBase):
             agent_value = rq_row.get(optional_par, None)
             if self._is_valid_parameter_value(agent_value):
                 self.mc_pars[optional_par] = agent_value
-        self.distance_asc_by_distance = self._validate_distance_asc_table(
-            scenario_parameters.get(G_MC_ASC_BY_DISTANCE)
-        )
-        self._scalar_pt_asc = scenario_parameters.get(G_MC_ASC_PT)
         # compute direct route information
         self.set_direct_route_travel_infos(routing_engine)
         self._apply_precomputed_direct_route_infos()
@@ -885,87 +868,11 @@ class MultinomialLogitRequest(RequestBase):
                 return value
         return None
 
-    @classmethod
-    def _validate_distance_asc_table(cls, distance_asc_table):
-        """Validate and normalize an optional full-ASC table indexed by distance band."""
-        if distance_asc_table is None:
-            return None
-        if not isinstance(distance_asc_table, dict):
-            raise ValueError(f"{G_MC_ASC_BY_DISTANCE} must be a mapping of distance bands to ASC mappings.")
-
-        required_bins = {bin_name for bin_name, _ in cls._DISTANCE_ASC_BINS}
-        provided_bins = set(distance_asc_table)
-        missing_bins = required_bins - provided_bins
-        extra_bins = provided_bins - required_bins
-        if missing_bins or extra_bins:
-            problems = []
-            if missing_bins:
-                problems.append(f"missing distance bands: {', '.join(sorted(missing_bins))}")
-            if extra_bins:
-                problems.append(f"unknown distance bands: {', '.join(sorted(extra_bins))}")
-            raise ValueError(f"Invalid {G_MC_ASC_BY_DISTANCE}: {'; '.join(problems)}.")
-
-        required_modes = set(cls._DISTANCE_ASC_MODE_KEYS)
-        normalized_table = {}
-        for bin_name, _ in cls._DISTANCE_ASC_BINS:
-            band_values = distance_asc_table[bin_name]
-            if not isinstance(band_values, dict):
-                raise ValueError(
-                    f"{G_MC_ASC_BY_DISTANCE}.{bin_name} must map the modes {sorted(required_modes)} to ASC values."
-                )
-            provided_modes = set(band_values)
-            missing_modes = required_modes - provided_modes
-            extra_modes = provided_modes - required_modes
-            if missing_modes or extra_modes:
-                problems = []
-                if missing_modes:
-                    problems.append(f"missing modes: {', '.join(sorted(missing_modes))}")
-                if extra_modes:
-                    problems.append(f"unknown modes: {', '.join(sorted(extra_modes))}")
-                raise ValueError(
-                    f"Invalid {G_MC_ASC_BY_DISTANCE}.{bin_name}: {'; '.join(problems)}."
-                )
-            normalized_table[bin_name] = {}
-            for mode_name in cls._DISTANCE_ASC_MODE_KEYS:
-                try:
-                    asc = float(band_values[mode_name])
-                except (TypeError, ValueError):
-                    raise ValueError(
-                        f"{G_MC_ASC_BY_DISTANCE}.{bin_name}.{mode_name} must be a finite numeric ASC value."
-                    ) from None
-                if not math.isfinite(asc):
-                    raise ValueError(
-                        f"{G_MC_ASC_BY_DISTANCE}.{bin_name}.{mode_name} must be a finite numeric ASC value."
-                    )
-                normalized_table[bin_name][mode_name] = asc
-        return normalized_table
-
-    def _get_distance_asc_band(self):
-        """Return the configured ASC band for this request's direct-route distance in metres."""
-        try:
-            direct_distance = float(self.direct_route_travel_distance)
-        except (TypeError, ValueError):
-            raise ValueError(
-                f"Cannot select {G_MC_ASC_BY_DISTANCE}: direct_route_distance must be a finite non-negative value in metres."
-            ) from None
-        if not math.isfinite(direct_distance) or direct_distance < 0:
-            raise ValueError(
-                f"Cannot select {G_MC_ASC_BY_DISTANCE}: direct_route_distance must be a finite non-negative value in metres."
-            )
-        for bin_name, upper_bound in self._DISTANCE_ASC_BINS:
-            if direct_distance < upper_bound:
-                return bin_name
-        raise RuntimeError("No distance ASC band matched the direct-route distance.")
-
     def _get_mode_choice_asc(self, mode_name):
-        """Return the full ASC for one mode, optionally selected from the direct-distance table."""
-        if mode_name not in self._DISTANCE_ASC_MODE_KEYS:
+        """Return the configured global ASC for one mode, or zero when omitted."""
+        if mode_name not in self._MODE_CHOICE_ASC_KEYS:
             raise KeyError(f"Unknown mode-choice ASC mode '{mode_name}'.")
-        if self.distance_asc_by_distance is not None:
-            return self.distance_asc_by_distance[self._get_distance_asc_band()][mode_name]
-        if mode_name == "pt":
-            return 0.0 if self._scalar_pt_asc is None else float(self._scalar_pt_asc)
-        scalar_asc = self.mc_pars.get(self._DISTANCE_ASC_MODE_KEYS[mode_name])
+        scalar_asc = self.mc_pars.get(self._MODE_CHOICE_ASC_KEYS[mode_name])
         return 0.0 if scalar_asc is None else float(scalar_asc)
 
     def _apply_precomputed_direct_route_infos(self):
@@ -1004,7 +911,7 @@ class MultinomialLogitRequest(RequestBase):
             self._get_mode_choice_asc("pv")
             - beta_time * direct_time
             - beta_money * (pv_distance_cost + self.current_pv_toll + self.current_pv_parking_fare)
-        )
+        ) 
 
         walking_speed = float(self.mc_pars[G_WALKING_SPEED])
         if walking_speed <= 0:
@@ -1078,6 +985,28 @@ class MultinomialLogitRequest(RequestBase):
         exp_sum = sum(exp_utilities.values())
         return {mode: exp_utility / exp_sum for mode, exp_utility in exp_utilities.items()}
 
+    def _get_selected_mode_travel_time(self):
+        """Return the selected alternative's time input in seconds, when available."""
+        if self.chosen_operator_id == G_MC_DEC_PV:
+            return self.direct_route_travel_time
+        if self.chosen_operator_id == G_MC_DEC_WALK:
+            return float(self.direct_route_travel_distance) / float(self.mc_pars[G_WALKING_SPEED])
+        if self.chosen_operator_id == G_MC_DEC_BIKE:
+            biking_speed = self.mc_pars.get(G_BIKING_SPEED)
+            if self._is_valid_parameter_value(biking_speed):
+                return float(self.direct_route_travel_distance) / float(biking_speed)
+            return None
+        if self.chosen_operator_id == G_MC_DEC_PT:
+            pt_travel_time = self.rq_row.get('tt_pt', None)
+            if self._is_valid_parameter_value(pt_travel_time):
+                return float(pt_travel_time) * 60
+            return None
+
+        selected_offer = self.offer.get(self.chosen_operator_id)
+        if selected_offer is not None and not selected_offer.service_declined():
+            return float(selected_offer[G_OFFER_WAIT]) + float(selected_offer[G_OFFER_DRIVE])
+        return None
+
     def choose_offer(self, scenario_parameters, simulation_time):
         """Choose between available MOD offers and external travel modes with a multinomial logit model."""
         utils = self._compute_external_mode_utilities(simulation_time)
@@ -1107,12 +1036,14 @@ class MultinomialLogitRequest(RequestBase):
             self.fare = 0
             self.toll = 0
             self.park_cost = 0
+        self.selected_mode_travel_time = self._get_selected_mode_travel_time()
         return self.chosen_operator_id
 
     def _add_record(self, record_dict):
         record_dict['mode_choice_utilities'] = self._format_mode_choice_dict(self.mode_choice_utilities)
         record_dict['mode_choice_probabilities'] = self._format_mode_choice_dict(self.mode_choice_probabilities)
         record_dict['highest_mod_utility'] = self.highest_mod_utility
+        record_dict[G_RQ_SELECTED_MODE_TT] = self.selected_mode_travel_time
         return record_dict
 
 

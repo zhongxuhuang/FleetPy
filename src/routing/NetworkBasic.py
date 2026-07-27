@@ -181,6 +181,10 @@ class NetworkBasic(NetworkBase):
         self.zone_mfd_functions = {}
         self._zone_to_edge_cache = None
         self._zone_to_edge_cache_zones_id = None
+        # Zones without an MFD still need a positive speed for the PV bathtub
+        # queue. These speeds are calculated once from the t=0 edge travel
+        # times when the zone-edge cache is first built.
+        self._fixed_zone_queue_speeds = {}
         self._zone_priority_queue_states = {}
         self._queued_route_trips = {}
         self._pv_route_start_events = []
@@ -293,14 +297,16 @@ class NetworkBasic(NetworkBase):
             self._current_tt_factor = None
         for zone_id, edge_infos in zone_to_edges.items():
             number_vehicles = self.current_total_zone_vehicle_counts.get(zone_id, 0)
-            avg_speed = self._get_zone_queue_speed(zone_id, number_vehicles)
-            if avg_speed is None or avg_speed <= 0:
+            mfd_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
+            if mfd_speed is None or mfd_speed <= 0:
                 missing_speed_zones.append(zone_id)
-                zone_speed_summary.append((zone_id, number_vehicles, avg_speed, len(edge_infos)))
+                queue_speed = self._get_zone_queue_speed(zone_id, number_vehicles)
+                source = "fixed_base_tt" if queue_speed is not None and queue_speed > 0 else "unavailable"
+                zone_speed_summary.append((zone_id, number_vehicles, queue_speed, source, len(edge_infos)))
                 continue
-            zone_speed_summary.append((zone_id, number_vehicles, avg_speed, len(edge_infos)))
+            zone_speed_summary.append((zone_id, number_vehicles, mfd_speed, "mfd", len(edge_infos)))
             for o_node_index, d_node_index, edge_distance in edge_infos:
-                dynamic_tt = edge_distance / avg_speed
+                dynamic_tt = edge_distance / mfd_speed
                 if self._set_edge_tt(o_node_index, d_node_index, dynamic_tt):
                     changed_edges.append((o_node_index, d_node_index, dynamic_tt))
 
@@ -334,13 +340,16 @@ class NetworkBasic(NetworkBase):
             record for record in self._zone_speed_time_series
             if record["simulation_time"] != simulation_time
         ]
-        for zone_id, number_vehicles, avg_speed, _ in zone_speed_summary:
+        for zone_id, number_vehicles, avg_speed, speed_source, _ in zone_speed_summary:
             self._zone_speed_time_series.append({
                 "simulation_time": simulation_time,
                 "zone_id": zone_id,
                 "vehicle_count": number_vehicles,
+                "pv_vehicle_count": self.current_pv_zone_vehicle_counts.get(zone_id, 0),
+                "mod_vehicle_count": self.current_mod_zone_vehicle_counts.get(zone_id, 0),
                 "avg_speed_mps": avg_speed,
                 "avg_speed_kmh": None if avg_speed is None else avg_speed * 3.6,
+                "speed_source": speed_source,
             })
 
     def get_current_zone_mfd_speeds(self):
@@ -354,8 +363,17 @@ class NetworkBasic(NetworkBase):
         return {
             record["zone_id"]: record["avg_speed_mps"]
             for record in self._zone_speed_time_series
-            if record["avg_speed_mps"] is not None
+            if record["speed_source"] == "mfd" and record["avg_speed_mps"] is not None
         }
+
+    def get_current_zone_vehicle_counts(self):
+        """Return a snapshot of total current vehicle counts by zone.
+
+        The count combines active PV route segments and moving MoD vehicles.
+        Callers receive a copy so they cannot modify the routing engine's MFD
+        state while using it for read-only calculations such as road pricing.
+        """
+        return self.current_total_zone_vehicle_counts.copy()
 
     def write_zone_speed_timeseries(self, output_file):
         """Write recorded zone MFD speeds to a result CSV.
@@ -402,6 +420,7 @@ class NetworkBasic(NetworkBase):
                 zone_to_edges.setdefault(zone_id, []).append((o_node.node_index, d_node.node_index, edge_distance))
         self._zone_to_edge_cache = zone_to_edges
         self._zone_to_edge_cache_zones_id = id(self.zones)
+        self._fixed_zone_queue_speeds = self._compute_fixed_zone_queue_speeds(zone_to_edges)
         if hasattr(self.zones, "set_mfd_network_lengths"):
             # Edge distances are in metres. MFD fits use density in veh/km.
             self.zones.set_mfd_network_lengths({
@@ -409,6 +428,29 @@ class NetworkBasic(NetworkBase):
                 for zone_id, edge_infos in zone_to_edges.items()
             })
         return self._zone_to_edge_cache
+
+    def _compute_fixed_zone_queue_speeds(self, zone_to_edges):
+        """Return t=0 base-TT-equivalent speeds for zones without an MFD.
+
+        The returned speed is ``sum(distance) / sum(edge_tt)`` in network
+        distance units per second.  It is only used to advance the zone-level
+        PV queue; it never overwrites the individual edge travel times.
+        """
+        fixed_speeds = {}
+        for zone_id, edge_infos in zone_to_edges.items():
+            if self._get_zone_average_speed_from_mfd(zone_id, 0) is not None:
+                continue
+            total_distance = 0.0
+            total_tt = 0.0
+            for o_node_index, d_node_index, edge_distance in edge_infos:
+                edge_tt, _ = self.nodes[o_node_index].edges_to[self.nodes[d_node_index]].get_tt_distance()
+                if edge_tt is None or edge_tt <= 0:
+                    continue
+                total_distance += edge_distance
+                total_tt += edge_tt
+            if total_distance > 0 and total_tt > 0:
+                fixed_speeds[zone_id] = total_distance / total_tt
+        return fixed_speeds
 
     def reset_network(self, simulation_time: float):
         """ this method is used in case a module changed the travel times to future states for forecasts
@@ -783,11 +825,18 @@ class NetworkBasic(NetworkBase):
         return None
 
     def _get_zone_queue_speed(self, zone_id, number_vehicles):
-        """Return an MFD speed, or None to retain the loaded edge TT."""
+        """Return the speed used to advance a zone-level PV queue.
+
+        MFD zones use their density-dependent speed. Zones without an MFD use
+        their cached t=0 base-edge-TT-equivalent speed, so their PV queue can
+        advance without changing any individual edge travel time.
+        """
         avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
         if avg_speed is not None and avg_speed > 0:
             return avg_speed
-        return None
+        if zone_id not in self._fixed_zone_queue_speeds and self._zone_to_edge_cache is None:
+            self._get_zone_to_edge_cache()
+        return self._fixed_zone_queue_speeds.get(zone_id)
 
     def set_zone_mfd_function(self, zone_id, mfd_function):
         """Registers an MFD function for one zone.
@@ -817,7 +866,7 @@ class NetworkBasic(NetworkBase):
             return base_tt, edge_distance
 
         number_vehicles = self.current_total_zone_vehicle_counts.get(zone_id, 0)
-        avg_speed = self._get_zone_queue_speed(zone_id, number_vehicles)
+        avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
         if avg_speed is None or avg_speed <= 0:
             return base_tt, edge_distance
         dynamic_tt = edge_distance / avg_speed
