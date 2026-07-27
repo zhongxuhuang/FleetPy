@@ -4,6 +4,19 @@ This document records source-level changes, equations, and implementation notes
 for files that require quick future reference. Add a new top-level entry for each
 additional source file.
 
+## `src/preprocessing/zones/add_zone_info_to_nodes_geojson.py`
+
+### Zone attributes for QGIS node inspection
+
+- Added 2026-07-27 +02:00 (Europe/Berlin).
+- The command-line utility joins `node_zone_info.csv` to a network's
+  `nodes_all_infos.geojson` by `node_index`, preserving geometry and all
+  existing attributes while adding integer `zone_id` and `is_centroid` fields.
+- It validates the required CSV fields and a zone assignment for every input
+  node before writing the GeoJSON. The primary `zone_id` retains the first CSV
+  row, matching `ZoneSystem`; nodes with multiple zone rows also receive a
+  semicolon-delimited `zone_id_candidates` field for boundary review.
+
 ## `studies/mt/analysis_common.py` and the four single-scenario analysis scripts
 
 ### Demand, MFD, MoD-operation, and user-welfare result figures
@@ -28,41 +41,71 @@ additional source file.
   unavailable without dedicated simulation logs.
 - The welfare script reconstructs selected non-preference generalized cost as
   `(ASC_selected - U_selected) / beta_money` from the recorded MNL utility and
-  the configured distance ASC table. Its MNL inclusive value uses a max-shifted
+  the configured global ASC for the selected mode. Its MNL inclusive value uses a max-shifted
   log-sum-exp calculation. Equity plots are limited to OD zone, distance, and
   pricing-zone exposure; missing income and trip-purpose fields are reported as
   unavailable rather than inferred.
 
 ## `src/infra/RoadPricing.py`, `src/routing/NetworkBasic.py`, and `studies/mt/scenarios/const_cfg_mt.yaml`
 
-### Munich road pricing and MFD-speed-responsive tolls
+### Munich road pricing and MFD-density-responsive tolls
 
 - Added 2026-07-23 +02:00 (Europe/Berlin).
-- `const_cfg_mt.yaml` enables static road pricing by default. Reservoir zones
-  0--4 each use `0.05` euro cents per metre; zone 5 (Outside Reservoirs) uses
-  zero. The same YAML retains a commented `myopic_mfd` alternative with a
-  300-second update interval, `0.05` base and `0.20` cap for zones 0--4, and
-  zero for zone 5.
+- Updated 2026-07-23 +02:00 (Europe/Berlin). `const_cfg_mt.yaml` now enables
+  `myopic_mfd` road pricing: it updates every 300 seconds with a `0.05` base
+  and `0.20` cap (euro cents per metre) for reservoir zones 0--3, a `0.10`
+  base and `0.25` cap for zone 4, and zero for zone 5 (Outside Reservoirs).
+  The static alternative is retained commented: zones 0--3 use `0.05`, zone 4
+  uses `0.10`, and zone 5 uses zero.
 - `MyopicMFDZoneDistancePricing` now reads the selected zone system's existing
   `mfd_parameters.csv` through `NetworkZoneSystem.mfd_parameters`; it no
   longer requires or reads `rp_k_critical_dict` / `rp_k_critical_file`.
-- `NetworkBasic.get_current_zone_mfd_speeds()` exposes the latest zone MFD
-  speeds already used for dynamic edge travel-time updates. It is read-only and
-  returns metres per second, so road pricing does not recalculate MFD states or
-  consume vehicle-count state directly.
-- For `q(k) = v_free*k - gamma*k^2`, the maximum-flow critical speed is
-  `v_critical = v_free / 2`. Myopic coefficients use
-  `min(max_coeff, base_coeff * v_critical / max(v_current, epsilon))`.
-  MFD free speeds are stored in km/h and converted to m/s. Missing parameters
-  or speeds follow `rp_mfd_fallback` (`zero` in the Munich alternative).
-- `5_road_pricing_info.csv` records `avg_speed_mps` and
-  `critical_speed_mps`, replacing the misleading vehicle-count `k_current` and
-  `k_critical` columns.
+- Updated 2026-07-25 +02:00 (Europe/Berlin). `NetworkBasic`
+  `get_current_zone_vehicle_counts()` exposes a read-only copy of the total
+  zone vehicle count already used by the MFD: background and selected PV route
+  segments plus moving MoD vehicles.
+- Updated 2026-07-27 +02:00 (Europe/Berlin). Zones without an MFD now retain
+  their original edge TTs and additionally receive one fixed PV-priority-queue
+  speed. The speed is calculated once, after the t=0 edge TTs are loaded, as
+  `sum(edge_distance) / sum(edge_tt)` over that zone's directed edges. Thus
+  background and selected PV can traverse zone 5 rather than remaining in a
+  zero-speed queue; the fixed queue speed never overwrites an edge TT. For
+  `Aimsun_Munich_2020` with `Munich_reservoirs`, zone 5 is 15.65561 m/s
+  (56.36 km/h).
+- `zone_speed_timeseries.csv` now additionally records
+  `pv_vehicle_count`, `mod_vehicle_count`, and `speed_source`. A non-MFD zone
+  using this queue fallback has `speed_source=fixed_base_tt`; MFD zones retain
+  `speed_source=mfd`.
+- Added `studies/mt/scenarios/scenario_cfg_mt_fixed_zone5.csv` for a separate
+  all-PV validation run whose output directory is
+  `mt_d1000_00_24_all_pv_fixed_zone5`.
+- For `q(k) = v_free*k - gamma*k^2`, the maximum-flow critical density is
+  `k_critical = v_free / (2 * gamma)`. Myopic coefficients use
+  `min(max_coeff, base_coeff * k_current / k_critical)`, where
+  `k_current = N_z / L_z` in veh/km. Thus the coefficient is below the base at
+  low density, equals it at critical density, and rises linearly after the MFD
+  maximum-flow point until capped. Missing parameters, vehicle counts, or zone
+  lengths follow `rp_mfd_fallback` (`zero` in the Munich alternative).
+- `5_road_pricing_info.csv` records `vehicle_count`,
+  `density_veh_per_km`, and `critical_density_veh_per_km` for the density
+  calculation.
 
 ## `studies/mt/plot_choice_distribution.py`
 
 ### Generic choice-distribution histogram
 
+- Updated 2026-07-25 +02:00 (Europe/Berlin). MNL user statistics now include
+  `selected_mode_travel_time` in seconds: PV uses the direct road TT; WALK and
+  BIKE use direct-route distance divided by their configured speeds; PT uses
+  demand `tt_pt` converted from minutes; and MOD uses the selected offer's
+  `t_wait + t_drive`. A PT choice supplied only as `pt_utility` has no
+  interpretable duration and is left blank. The choice-distribution script now
+  summarises this selected-mode field by default; historical results must
+  explicitly select `--tt-column direct_route_travel_time` to report the legacy
+  road TT.
+- Updated 2026-07-25 +02:00 (Europe/Berlin). The overall choice summary and
+  histogram labels now report each mode's selected count and its percentage of
+  all non-empty choices.
 - Updated 2026-07-21 +02:00 (Europe/Berlin).
 - Absorbed and replaced `studies/mt/analyze_choice_trip_metrics.py`, which was
   removed. The unified command now prints selected count plus average
@@ -94,61 +137,14 @@ additional source file.
 
 ### Munich mode-choice scenario initialisation
 
-- Updated 2026-07-22 +02:00 (Europe/Berlin).
-- The third distance-band ASC calibration uses the observed shares from
-  `mt_d1000_00_24_2`.  For bands below 50 km and modes with non-zero simulated
-  choices, it adds a further 30% of
-  `ln(target_share / simulated_share) / log_alpha` to the complete ASC.  The
-  target PV and MOD shares each equal half of the observed combined MIV
-  (driver plus passenger) share.  Modes with zero simulated choices are not
-  mechanically updated because the log-ratio is undefined; their availability
-  must be diagnosed from a subsequent simulation.
-- The fourth calibration uses the complete `mt_d1000_00_24_3` result and the
-  same 30%-damped update for each below-50-km mode with a non-zero simulated
-  share.  The next scenario is `mt_d1000_00_24_4`.
-- The fifth calibration uses `mt_d1000_00_24_4` and retains the same update
-  rule; the next scenario is `mt_d1000_00_24_5`.
-- The sixth calibration uses the complete `mt_d1000_00_24_5` result.  For a
-  below-50-km distance band whose largest modal-share gap exceeds 10 percentage
-  points, it applies 80% of `ln(target_share / simulated_share) / log_alpha`;
-  the remaining bands retain the 30% update.  Modes with zero simulated choices
-  remain unchanged.  The next scenario is `mt_d1000_00_24_6`.
-- The seventh calibration uses mean MNL probabilities from
-  `mt_d1000_00_24_6`, rather than sampled selected choices. Bands with a
-  largest target-share gap above 10 percentage points use an 80% update;
-  the remaining bands use 30%. This applies the resulting large long-distance
-  MOD and walking ASCs as an explicit price/time-compensation scenario.
-- The eighth calibration retains all PV, WALK, and PT entries from the seventh
-  table while reducing BIKE ASC and increasing MOD ASC in bands below 20 km.
-  It uses the latest selected-choice shares with 80% damping: the immediate
-  objective is to reduce the overrepresented bike mode and increase MOD
-  selection. PV is intentionally not increased because the planned toll
-  scenario will subsequently lower its utility. The sparse 20--50 km and all
-  >=50 km bands are unchanged. The corresponding distance-ASC regression test
-  is updated to assert this eighth-calibration table.
-- The ninth calibration uses the latest selected-choice distribution with 80%
-  damping. It raises MOD ASC in every band below 20 km, makes only residual
-  downward BIKE corrections, and reduces PT ASC only in the 5--10 and 10--20 km
-  bands. PV and WALK are unchanged: PV will later be affected by tolls, while
-  the short-distance WALK surplus is expected to be displaced by MOD. The
-  regression assertion now represents this ninth-calibration configuration.
-
-- Updated 2026-07-21 +02:00 (Europe/Berlin).
-- `mode_choice_asc_by_distance` enables a manually maintained table of full
-  ASCs selected from direct-route distance. The Munich table includes the nine
-  bands `<0.5`, `0.5-1`, `1-2`, `2-5`, `5-10`, `10-20`, `20-50`, `50-100`, and
-  `>=100 km`, with the five modes `pv`, `walk`, `bike`, `pt`, and `mod`.
-  The first two calibration updates use 30% of
-  `ln(target_share / simulated_share) / log_alpha` for bands below 50 km.
-  They split each observed MIV driver/passenger share equally between PV and
-  MOD. Entries with zero observed choices that require offer/probability
-  analysis, and all bands at or above 50 km, remain zero.
-- The Munich scenario contains no top-level scalar `mode_choice_asc_<mode>`
-  settings. Its table value is the complete ASC for the selected distance band
-  and does not add to any scalar value.
-- The former aggregate-share scalar ASC initialisation is superseded by the
-  manual distance table in this scenario. Without a distance table, any
-  omitted scalar ASC means a zero intercept for that mode.
+- Updated 2026-07-24 +02:00 (Europe/Berlin).
+- Mode choice now uses exactly one global `mode_choice_asc_<mode>` value for
+  each of `pv`, `walk`, `bike`, `pt`, and `mod`; there is no distance-band ASC
+  configuration. Missing values have a zero intercept, and every global ASC,
+  including PT, may be overridden per demand row.
+- The Munich defaults are the request-weighted mean of the former ninth
+  calibration table over the 104,408 requests in `mt_d1000_00_24_9_base`:
+  PV `144.8`, WALK `745.6`, BIKE `-400.6`, PT `-213.6`, and MOD `1293.2`.
 - `private_vehicle_parking_fare: 350` adds a fixed €3.50 (350-cent) destination
   parking cost to the PV utility and records it as `included_park_costs` when
   PV is selected.
@@ -174,19 +170,16 @@ additional source file.
 
 ## `src/misc/globals.py`
 
-### MNL PV parking fare and ASC keys
+### MNL result, parking-fare, and ASC keys
 
-- Updated 2026-07-21 +02:00 (Europe/Berlin).
+- Updated 2026-07-25 +02:00 (Europe/Berlin).
+- `G_RQ_SELECTED_MODE_TT` names the user-stat result field
+  `selected_mode_travel_time` in seconds.
 - `G_MC_C_P_PV` names the optional fixed per-trip PV parking fare parameter
   (`private_vehicle_parking_fare`), and `G_MC_ASC_MOD` names the optional MoD
   alternative-specific constant (`mode_choice_asc_mod`).
-- ASC keys use the unified `mode_choice_asc_<mode>` convention: `pv`, `bike`,
-  `pt`, `mod`, and `walk`. Walking has an explicit scalar ASC; distance-table
-  values are used exactly as configured and are not normalized to a reference
-  alternative.
-- `G_MC_ASC_BY_DISTANCE` names the optional `mode_choice_asc_by_distance`
-  scenario mapping used for complete ASC values selected by direct-route
-  distance.
+- ASC keys use the unified global `mode_choice_asc_<mode>` convention: `pv`,
+  `bike`, `pt`, `mod`, and `walk`. No distance-based ASC key exists.
 
 ## `src/routing/NetworkBasic.py`
 
@@ -199,7 +192,7 @@ additional source file.
 | Compared against | Current working tree, including uncommitted changes |
 | Baseline-to-current diff | 675 insertions, 51 deletions |
 | Created | 2026-07-14 21:17:14 +02:00 (Europe/Berlin) |
-| Last updated | 2026-07-19 +02:00 (Europe/Berlin) |
+| Last updated | 2026-07-27 +02:00 (Europe/Berlin) |
 
 Line numbers below refer to the source snapshot recorded above. Function names
 are the stable references when later edits shift line numbers.
@@ -244,6 +237,10 @@ are the stable references when later edits shift line numbers.
 - `_get_zone_priority_queue_state` (`:454`) creates a zone state with cumulative
   entries `E`, completions `G`, distance progress `z`, speed `v`, update time,
   and a min-heap of completion thresholds.
+- `_compute_fixed_zone_queue_speeds` derives a fixed base-edge-TT-equivalent
+  speed for zones that lack an MFD. `_get_zone_queue_speed` uses it only for
+  their PV queue; MFD edge updates and section routing continue to use MFD
+  speeds exclusively, so non-MFD edge TTs remain untouched.
 - `_register_zone_trip` (`:584`) inserts PV route segments into the relevant
   zone queue; `_advance_zone_priority_queue_state` (`:511`) advances the queue
   to the requested simulation time and transfers completed trips onward.
@@ -296,7 +293,8 @@ are the stable references when later edits shift line numbers.
 | Rule | Current source reference | Formula / implementation | Purpose |
 | --- | --- | --- | --- |
 | Travel-time factor | `get_section_infos` (`:880-890`) | `tt_effective = tt_stored * current_tt_factor` | Applies a configured scalar network-wide factor without rewriting stored edge distances. |
-| Dynamic edge TT | `_update_dynamic_edge_travel_times` (`:272-326`); `_get_mfd_section_infos` (`:794-815`) | `tt_e = distance_e / v_z` | Sets or returns the TT of an edge from its zone speed. Invalid or unavailable speeds leave the base TT unchanged. |
+| Dynamic edge TT | `_update_dynamic_edge_travel_times` (`:272-326`); `_get_mfd_section_infos` (`:794-815`) | `tt_e = distance_e / v_z` | Sets or returns the TT of an edge from its MFD speed. Zones without an MFD retain base edge TTs. |
+| Non-MFD PV queue speed | `_compute_fixed_zone_queue_speeds`; `_get_zone_queue_speed` | `v_{z,base} = sum(d_e) / sum(tt_e)` at t=0 | Advances PV through a zone without an MFD while preserving its individual edge TTs. |
 | TT equality tolerance | `_set_edge_tt` (`:428-440`) | `|tt_old - tt_new| <= 1e-9 * max(1, |tt_old|, |tt_new|)` | Avoids an unnecessary edge write and routing-cache reset for floating-point-equivalent TTs. |
 | PV queue progress | `_advance_zone_priority_queue_state` (`:511-555`) | `z_t = z_last + (t - t_last) * v` | Advances the shared distance-progress counter of a zone's PV bathtub queue. |
 | Active PV count | `_get_zone_priority_queue_active_count` (`:569-571`) | `N_PV,z = max(E_z - G_z, 0)` | Counts PV route segments currently active in a zone queue. |
@@ -331,7 +329,7 @@ source files rather than mixing their details into this entry.
 | Field | Value |
 | --- | --- |
 | Source file | `src/infra/NetworkZoning.py` |
-| Last updated | 2026-07-17 +02:00 (Europe/Berlin) |
+| Last updated | 2026-07-25 +02:00 (Europe/Berlin) |
 
 ### Data-driven MFD configuration
 
@@ -390,16 +388,9 @@ are the stable references when later edits shift line numbers.
   attached zone system's `get_route_toll_cost` when that interface is present;
   missing zoning, interface, or route produces zero toll.
 - `MultinomialLogitRequest` accepts optional `private_vehicle_parking_fare` and
-  `mode_choice_asc_mod` parameters. They may be set in the scenario or
-  overridden per demand row. The parking fare is a fixed per-PV-trip monetary
+  global `mode_choice_asc_<mode>` parameters. They may be set in the scenario
+  or overridden per demand row. The parking fare is a fixed per-PV-trip monetary
   cost and is recorded as `included_park_costs` when PV is selected.
-- `mode_choice_asc_by_distance` is an optional scenario-only mapping of nine
-  fixed distance bands to complete `pv`, `walk`, `bike`, `pt`, and `mod` ASC
-  values. The request validates every band, mode, and finite numeric value;
-  it uses `direct_route_distance` in metres with lower-inclusive boundaries.
-  A configured table overrides the scalar ASC for all five alternatives,
-  including PT and MOD. Without a table, any missing scalar ASC is treated as
-  no ASC (zero), while configured scalar values retain their legacy behavior.
 
 #### Choice set, utility calculation, and numerical stability
 
@@ -426,6 +417,12 @@ are the stable references when later edits shift line numbers.
 
 #### Mode-choice output
 
+- Updated 2026-07-25 +02:00 (Europe/Berlin). After selecting an alternative,
+  `MultinomialLogitRequest` records `selected_mode_travel_time` in seconds:
+  PV uses the direct-route TT, WALK/BIKE use direct-route distance divided by
+  configured speed, PT uses demand `tt_pt` converted from minutes, and MOD
+  uses the selected offer's waiting plus driving time. A PT utility override
+  without `tt_pt` records no duration.
 - `_add_record` (`:998`) now exports the utility and probability of every
   considered alternative, serialized as semicolon-separated `mode:value`
   pairs, and exports `highest_mod_utility`.
@@ -434,7 +431,7 @@ are the stable references when later edits shift line numbers.
 
 | Rule | Current source reference | Formula / implementation | Purpose |
 | --- | --- | --- | --- |
-| Distance ASC selection | `_get_distance_asc_band`; `_get_mode_choice_asc` | `ASC_m = asc_table[band(d_direct)][m]` when the table is configured, otherwise the scalar mode ASC (zero if omitted) | Selects a complete manual ASC from direct distance in metres; no reference-mode normalisation is applied. |
+| Global ASC selection | `_get_mode_choice_asc` | `ASC_m = mode_choice_asc_m`, or `0` when omitted | Selects one global intercept for each mode; no reference-mode normalisation is applied. |
 | Walking time and utility | `_compute_external_mode_utilities` | `t_walk = d_direct / v_walk`; `U_walk = ASC_walk - beta_time * t_walk` | Applies the selected or scalar walking ASC. |
 | Bike time and utility | `_compute_external_mode_utilities` | `t_bike = d_direct / v_bike`; `U_bike = ASC_bike - beta_time * t_bike` | Adds bike only for a valid configured bike speed. |
 | PV utility | `_compute_external_mode_utilities` | `U_PV = ASC_PV - beta_time * t_direct - beta_money * (cost_per_m * d_direct + toll + parking_fare)` | Combines selected/scalar ASC, direct PV time, distance cost, route toll, and parking fare. |
