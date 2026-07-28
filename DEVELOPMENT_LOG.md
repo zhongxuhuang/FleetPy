@@ -87,17 +87,30 @@ additional source file.
   choice; setting it to `True` restores fixed-background-PV behavior.
   `scenario_cfg_mt_all_mnl.csv` explicitly keeps the all-MNL MT trial. This
   switch changes classification only and does not apply demand scaling.
+- Updated 2026-07-28 +02:00 (Europe/Berlin). The optional scenario mapping
+  `mfd_exogenous_density_veh_per_km` adds a static, MFD-only density to an
+  MFD-equipped zone. It affects its MFD speed, PV priority-queue speed, dynamic
+  edge TT, and myopic MFD price, but it creates no vehicle, route, user record,
+  PV queue entry, or MoD count. `scenario_cfg_mt_exogenous70.csv` configures
+  zone 0--4 at approximately `0.7 * k_critical` (35.1, 35.6, 34.6, 36.0, and
+  48.8 veh/km), respectively, while retaining `rq_pv_as_background=True` so
+  fixed background-PV assignment remains available. Zone 5 has no MFD and no
+  such background.
 - `zone_speed_timeseries.csv` now additionally records
   `pv_vehicle_count`, `mod_vehicle_count`, and `speed_source`. A non-MFD zone
   using this queue fallback has `speed_source=fixed_base_tt`; MFD zones retain
   `speed_source=mfd`.
+- `zone_speed_timeseries.csv` additionally distinguishes `vehicle_count`
+  (real PV plus moving MoD), `exogenous_vehicle_count`, and
+  `mfd_vehicle_count` (their sum). The road-pricing output contains the same
+  count distinction while its density is the MFD density.
 - Added `studies/mt/scenarios/scenario_cfg_mt_fixed_zone5.csv` for a separate
   all-PV validation run whose output directory is
   `mt_d1000_00_24_all_pv_fixed_zone5`.
 - For `q(k) = v_free*k - gamma*k^2`, the maximum-flow critical density is
   `k_critical = v_free / (2 * gamma)`. Myopic coefficients use
   `min(max_coeff, base_coeff * k_current / k_critical)`, where
-  `k_current = N_z / L_z` in veh/km. Thus the coefficient is below the base at
+  `k_current = N_z / L_z + k_exogenous,z` in veh/km. Thus the coefficient is below the base at
   low density, equals it at critical density, and rises linearly after the MFD
   maximum-flow point until capped. Missing parameters, vehicle counts, or zone
   lengths follow `rp_mfd_fallback` (`zero` in the Munich alternative).
@@ -219,7 +232,7 @@ additional source file.
 | Compared against | Current working tree, including uncommitted changes |
 | Baseline-to-current diff | 675 insertions, 51 deletions |
 | Created | 2026-07-14 21:17:14 +02:00 (Europe/Berlin) |
-| Last updated | 2026-07-27 +02:00 (Europe/Berlin) |
+| Last updated | 2026-07-28 +02:00 (Europe/Berlin) |
 
 Line numbers below refer to the source snapshot recorded above. Function names
 are the stable references when later edits shift line numbers.
@@ -328,7 +341,7 @@ are the stable references when later edits shift line numbers.
 | Queue-entry projection | `_register_zone_trip` (`:584-635`) | `Δt_projected = max(t_start - t_last, 0)`; `z_projected = z + Δt_projected * v` | Computes queue progress at a PV segment's entry time before it is inserted. |
 | PV completion threshold | `_register_zone_trip` (`:584-635`) | `θ = distance_remaining + z_projected`; complete when `θ <= z` | Stores each PV segment's required cumulative progress in a min-heap and determines when it leaves the zone. |
 | Total zone vehicles | `_refresh_total_zone_vehicle_counts` (`:735-749`) | `N_z = N_PV,z + N_MoD,z` | Gives the MFD and dynamic-TT update the total current number of vehicles in each zone. |
-| MFD vehicle-count conversion | `_get_zone_to_edge_cache` (`:354-379`); `NetworkZoneSystem.get_mfd_average_speed` | `k_z = N_z / L_z` | Converts the simulated total count to the fitted MFD density in veh/km. |
+| MFD vehicle-count conversion | `_get_zone_to_edge_cache` (`:354-379`); `NetworkZoneSystem.get_mfd_average_speed` | `k_z = N_z / L_z + k_exogenous,z` | Converts real simulated counts plus optional static MFD-only background density to the fitted MFD density in veh/km. |
 | Edge-position interpolation | `return_position_coordinates` (`:850-863`) | `coord = rel_pos * coord_destination + (1 - rel_pos) * coord_origin` | Converts an in-edge network position into metric coordinates. |
 | Partial-edge movement | `move_along_route` (`:1392-1464`) | `t_next = t_last + (1 - rel_pos) * tt_edge`; `rel_end = (t_end - t_last) / tt_edge + rel_pos` | Advances a vehicle along a partially traversed edge within one simulation time step. |
 
@@ -356,7 +369,7 @@ source files rather than mixing their details into this entry.
 | Field | Value |
 | --- | --- |
 | Source file | `src/infra/NetworkZoning.py` |
-| Last updated | 2026-07-25 +02:00 (Europe/Berlin) |
+| Last updated | 2026-07-28 +02:00 (Europe/Berlin) |
 
 ### Data-driven MFD configuration
 
@@ -367,9 +380,13 @@ system directory. Its required fields are `zone_id`, `mfd_type`, `v_kmh`, and
 finite positive coefficients, and the supported type.
 
 The routing engine supplies directed road lengths so the implementation can
-evaluate `k_z = N_z / L_z` and `v_z = max((v_kmh - gamma * k_z) / 3.6, 0.1)`.
-If the CSV is absent or a zone has no row, that zone has no MFD speed and its
-existing edge travel times remain unchanged.
+evaluate `k_z = N_z / L_z + k_exogenous,z` and
+`v_z = max((v_kmh - gamma * k_z) / 3.6, 0.1)`. The optional scenario mapping
+`mfd_exogenous_density_veh_per_km` is validated as non-negative zone densities;
+it applies only to zones with an MFD and is converted to an equivalent vehicle
+count only for MFD calculations and output. If the CSV is absent or a zone has
+no row, that zone has no MFD speed and its existing edge travel times remain
+unchanged.
 
 ## `src/demand/TravelerModels.py`
 

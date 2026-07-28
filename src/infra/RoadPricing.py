@@ -114,6 +114,8 @@ class StaticZoneDistancePricing(RoadPricingPolicy):
                 "zone_id": zone_id,
                 "pricing_mode": self.policy_name,
                 "vehicle_count": None,
+                "exogenous_vehicle_count": None,
+                "mfd_vehicle_count": None,
                 "density_veh_per_km": None,
                 "critical_density_veh_per_km": None,
                 "toll_coeff": self.static_coefficients.get(zone_id, 0.0),
@@ -193,6 +195,8 @@ class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
             fallback_reason = ""
             old_coeff = self.current_coefficients.get(zone_id, 0.0)
             vehicle_count = None
+            exogenous_vehicle_count = None
+            mfd_vehicle_count = None
             density = None
             critical_density = self._get_critical_density(zone_id)
             if critical_density is None:
@@ -227,16 +231,44 @@ class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
                         coeff = old_coeff
                     fallback_reason = "missing_mfd_network_length"
                 else:
-                    density = vehicle_count / network_length_km
-                    base_coeff = _get_zone_value(self.base_coefficients, zone_id, 0.0)
-                    max_coeff = _get_zone_value(self.max_coefficients, zone_id, float("inf"))
-                    coeff = min(base_coeff * density / critical_density, max_coeff)
+                    try:
+                        exogenous_count_getter = getattr(
+                            self.zone_system, "get_mfd_exogenous_vehicle_count", None
+                        )
+                        exogenous_vehicle_count = (
+                            float(exogenous_count_getter(zone_id))
+                            if callable(exogenous_count_getter) else 0.0
+                        )
+                        mfd_count_getter = getattr(self.zone_system, "get_mfd_vehicle_count", None)
+                        mfd_vehicle_count = (
+                            float(mfd_count_getter(zone_id, vehicle_count))
+                            if callable(mfd_count_getter) else vehicle_count + exogenous_vehicle_count
+                        )
+                        density_getter = getattr(self.zone_system, "get_mfd_density", None)
+                        density = (
+                            density_getter(zone_id, vehicle_count)
+                            if callable(density_getter) else mfd_vehicle_count / network_length_km
+                        )
+                        if density is None or not math.isfinite(density):
+                            raise ValueError("invalid MFD density")
+                    except (TypeError, ValueError):
+                        if self.fallback == "zero":
+                            coeff = 0.0
+                        else:
+                            coeff = old_coeff
+                        fallback_reason = "invalid_mfd_density"
+                    else:
+                        base_coeff = _get_zone_value(self.base_coefficients, zone_id, 0.0)
+                        max_coeff = _get_zone_value(self.max_coefficients, zone_id, float("inf"))
+                        coeff = min(base_coeff * density / critical_density, max_coeff)
             self.current_coefficients[zone_id] = coeff
             records.append({
                 "sim_time": sim_time,
                 "zone_id": zone_id,
                 "pricing_mode": self.policy_name,
                 "vehicle_count": vehicle_count,
+                "exogenous_vehicle_count": exogenous_vehicle_count,
+                "mfd_vehicle_count": mfd_vehicle_count,
                 "density_veh_per_km": density,
                 "critical_density_veh_per_km": critical_density,
                 "toll_coeff": coeff,

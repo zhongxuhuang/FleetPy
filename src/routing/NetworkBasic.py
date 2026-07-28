@@ -341,12 +341,15 @@ class NetworkBasic(NetworkBase):
             if record["simulation_time"] != simulation_time
         ]
         for zone_id, number_vehicles, avg_speed, speed_source, _ in zone_speed_summary:
+            exogenous_vehicle_count = self._get_zone_exogenous_vehicle_count(zone_id)
             self._zone_speed_time_series.append({
                 "simulation_time": simulation_time,
                 "zone_id": zone_id,
                 "vehicle_count": number_vehicles,
                 "pv_vehicle_count": self.current_pv_zone_vehicle_counts.get(zone_id, 0),
                 "mod_vehicle_count": self.current_mod_zone_vehicle_counts.get(zone_id, 0),
+                "exogenous_vehicle_count": exogenous_vehicle_count,
+                "mfd_vehicle_count": number_vehicles + exogenous_vehicle_count,
                 "avg_speed_mps": avg_speed,
                 "avg_speed_kmh": None if avg_speed is None else avg_speed * 3.6,
                 "speed_source": speed_source,
@@ -374,6 +377,13 @@ class NetworkBasic(NetworkBase):
         state while using it for read-only calculations such as road pricing.
         """
         return self.current_total_zone_vehicle_counts.copy()
+
+    def _get_zone_exogenous_vehicle_count(self, zone_id):
+        """Return static MFD-only background vehicles without altering real counts."""
+        getter = getattr(self.zones, "get_mfd_exogenous_vehicle_count", None)
+        if not callable(getter):
+            return 0.0
+        return getter(zone_id)
 
     def write_zone_speed_timeseries(self, output_file):
         """Write recorded zone MFD speeds to a result CSV.
