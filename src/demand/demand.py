@@ -101,10 +101,12 @@ class Demand:
         number_valid_trips = future_requests.shape[0]
         future_requests[G_RQ_TIME] = future_requests[G_RQ_TIME] - np.mod(future_requests[G_RQ_TIME],
                                                                          simulation_time_step)
-        # A demand file can optionally mark background traffic with rq_pv == 1. All
-        # other rows, including empty entries and files without this column, remain
-        # ordinary requests.
-        if "rq_pv" in future_requests.columns:
+        # A demand file can optionally mark background traffic with rq_pv == 1.
+        # By default every valid row passes through the configured traveler /
+        # mode-choice model. Scenarios can set rq_pv_as_background to True to
+        # retain fixed-background-PV behavior for those rows.
+        rq_pv_as_background = self.scenario_parameters.get("rq_pv_as_background", False)
+        if rq_pv_as_background and "rq_pv" in future_requests.columns:
             background_mask = pd.to_numeric(future_requests["rq_pv"], errors="coerce").eq(1)
             background_trips = future_requests.loc[background_mask,
                                                    [G_RQ_TIME, G_RQ_ORIGIN, G_RQ_DESTINATION]].copy()
@@ -142,7 +144,10 @@ class Demand:
                  f" requests removed ({G_RQ_TIME} not in simulation time)")
         LOG.info(f"init(): {number_rq_1 - number_valid_trips}/{number_rq_1}"
                  f" requests removed ({G_RQ_ORIGIN} == {G_RQ_DESTINATION})")
-        LOG.info(f"init(): loaded {number_rq} regular requests and {number_background_trips} background trips")
+        LOG.info(
+            f"init(): loaded {number_rq} regular requests and {number_background_trips} background trips "
+            f"(rq_pv_as_background={rq_pv_as_background})"
+        )
         # LOG.debug(f"self.future_requests = {self.future_requests}")
 
     def load_parcel_demand_file(self, start_time, end_time, parcel_rq_file_dir, parcel_rq_file_name, np_random_seed, parcel_rq_type=None,

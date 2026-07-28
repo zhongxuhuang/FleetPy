@@ -4,6 +4,15 @@ This document records source-level changes, equations, and implementation notes
 for files that require quick future reference. Add a new top-level entry for each
 additional source file.
 
+## Local GitHub credential recovery
+
+- Updated 2026-07-27 +02:00 (Europe/Berlin).
+- Removed the stale Windows Git Credential Manager record for `https://github.com`
+  after GitHub rejected a push with `Invalid username or token`. Repository source,
+  Git remotes, and commit history were not changed. The next GitHub operation that
+  requires credentials must complete a fresh browser sign-in with write access to
+  `zhongxuhuang/FleetPy`.
+
 ## `src/preprocessing/zones/add_zone_info_to_nodes_geojson.py`
 
 ### Zone attributes for QGIS node inspection
@@ -72,6 +81,12 @@ additional source file.
   zero-speed queue; the fixed queue speed never overwrites an edge TT. For
   `Aimsun_Munich_2020` with `Munich_reservoirs`, zone 5 is 15.65561 m/s
   (56.36 km/h).
+- Updated 2026-07-28 +02:00 (Europe/Berlin). Demand files can use the optional
+  scenario parameter `rq_pv_as_background` (default `False`). By default, rows
+  marked `rq_pv=1` remain regular requests and enter the configured mode
+  choice; setting it to `True` restores fixed-background-PV behavior.
+  `scenario_cfg_mt_all_mnl.csv` explicitly keeps the all-MNL MT trial. This
+  switch changes classification only and does not apply demand scaling.
 - `zone_speed_timeseries.csv` now additionally records
   `pv_vehicle_count`, `mod_vehicle_count`, and `speed_source`. A non-MFD zone
   using this queue fallback has `speed_source=fixed_base_tt`; MFD zones retain
@@ -138,13 +153,25 @@ additional source file.
 ### Munich mode-choice scenario initialisation
 
 - Updated 2026-07-24 +02:00 (Europe/Berlin).
+- Updated 2026-07-28 +02:00 (Europe/Berlin). The aggregate mode shares from
+  104,408 choices (PV 29.47%, MOD 18.60%, WALK 25.14%, BIKE 7.83%, PT 18.96%) were
+  recalibrated toward the German reference shares (40%, 13%, 26%, 11%, 11%).
+  One 90%-damped log-share update, using WALK as the fixed reference because it
+  was already 96.7% of its target, sets the global ASCs to PV `169.3`, WALK
+  `745.6`, BIKE `-373.0`, PT `-265.6`, and MOD `1077.1`.
+- Updated 2026-07-28 +02:00 (Europe/Berlin). The second run produced PV
+  32.76%, MOD 15.19%, WALK 26.83%, BIKE 9.22%, and PT 16.01%. A second
+  90%-damped log-share update retains WALK as the fixed reference (103.2% of
+  target) and sets the global ASCs to PV `190.1`, WALK `745.6`, BIKE `-354.3`,
+  PT `-296.5`, and MOD `1065.9`.
 - Mode choice now uses exactly one global `mode_choice_asc_<mode>` value for
   each of `pv`, `walk`, `bike`, `pt`, and `mod`; there is no distance-band ASC
   configuration. Missing values have a zero intercept, and every global ASC,
   including PT, may be overridden per demand row.
-- The Munich defaults are the request-weighted mean of the former ninth
-  calibration table over the 104,408 requests in `mt_d1000_00_24_9_base`:
-  PV `144.8`, WALK `745.6`, BIKE `-400.6`, PT `-213.6`, and MOD `1293.2`.
+- The pre-2026-07-28 Munich configuration used PV `144.8`, WALK `745.6`, BIKE
+  `-400.6`, PT `-213.6`, and MOD `1112.4`; it was derived from a
+  request-weighted former ninth-calibration table over the 104,408 requests in
+  `mt_d1000_00_24_9_base`.
 - `private_vehicle_parking_fare: 350` adds a fixed €3.50 (350-cent) destination
   parking cost to the PV utility and records it as `included_park_costs` when
   PV is selected.
