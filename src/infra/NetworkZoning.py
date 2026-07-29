@@ -30,6 +30,7 @@ class NetworkZoneSystem(ZoneSystem):
         # self.edge_zone_df = pd.read_csv(edge_zone_f)
         self.current_toll_cost_scale = 0
         self.current_toll_coefficients = {}
+        self.road_pricing_policy = None
         self.current_park_costs = {}
         self.current_park_search_durations = {}
         self.mfd_parameters = self._load_mfd_parameters()
@@ -285,6 +286,10 @@ class NetworkZoneSystem(ZoneSystem):
             if k in valid_zones:
                 self.current_toll_coefficients[k] = float(v)
 
+    def set_road_pricing_policy(self, policy):
+        """Register the active policy for PV-only tariff quotations."""
+        self.road_pricing_policy = policy
+
     def set_current_toll_costs(self, use_pre_defined_zone_scales=False, rel_toll_cost_dict={}):
         """This method sets the current toll costs in cent per meter.
 
@@ -352,6 +357,13 @@ class NetworkZoneSystem(ZoneSystem):
             routing_engine, sim_time, route, park_origin=False, park_destination=False
         )
         return toll_costs
+
+    def get_pv_route_toll_cost(self, routing_engine, sim_time, route):
+        """Return the PV tariff while leaving generic MoD route tolls unchanged."""
+        policy_toll = getattr(self.road_pricing_policy, "get_pv_route_toll_cost", None)
+        if callable(policy_toll):
+            return policy_toll(routing_engine, sim_time, route)
+        return self.get_route_toll_cost(routing_engine, sim_time, route)
     
     def get_parking_average_access_egress_times(self, o_node, d_node):
         # TODO # after ISTTT: get_parking_average_access_egress_times()

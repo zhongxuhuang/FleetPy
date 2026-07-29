@@ -4,6 +4,105 @@ This document records source-level changes, equations, and implementation notes
 for files that require quick future reference. Add a new top-level entry for each
 additional source file.
 
+## `studies/mt/plot_all_metrics.py`
+
+### One-command single-scenario metrics generation
+
+- Added 2026-07-29 +02:00 (Europe/Berlin). The command-line wrapper accepts one
+  FleetPy result directory and sequentially runs the demand/mode, MFD traffic,
+  MoD-operation, and user-welfare plot scripts using the active Python
+  interpreter. It deliberately delegates all calculation and plot generation to
+  those scripts rather than duplicating their metric logic.
+- `--output-dir` is an optional common parent directory; the wrapper creates the
+  four topic subdirectories below it. `--time-bin-min` is passed to the three
+  scripts that support time aggregation (demand, MoD, and welfare), while MFD
+  retains its existing time resolution.
+- Updated 2026-07-29 +02:00 (Europe/Berlin). Zone 5 is excluded from MFD
+  traffic output by default. Pass `--include-zone-5` to forward that override
+  only to the MFD traffic script in a batch run.
+
+## `studies/mt/plot_mfd_traffic_metrics.py`
+
+### Default Zone 5 exclusion
+
+- Added 2026-07-29 +02:00 (Europe/Berlin). Zone 5 is removed before every MFD
+  calculation by default, so all generated plots, tables, congestion summaries,
+  and MFD parameter output exclude that zone consistently. Pass
+  `--include-zone-5` to retain it for a specific run.
+
+## `src/preprocessing/demand/replicate_demand.py`
+
+### Demand-file and demand-directory replication for real mode-choice events
+
+- Added 2026-07-29 +02:00 (Europe/Berlin).
+- Updated 2026-07-29 +02:00 (Europe/Berlin). The command-line utility accepts
+  either one demand CSV or a demand directory. A CSV produces a sibling named
+  `<input_stem>_<copies>.csv` by default; a directory produces
+  `<input_name>_<copies>` and preserves auxiliary files while transforming
+  every request CSV containing `rq_time`. Use `--output-path` to select either
+  output explicitly (`--output-dir` remains an alias).
+- A row whose `rq_pv` value is numerically `1` remains once. Every other row,
+  including a missing or blank `rq_pv`, yields exactly `copies` real request
+  events. Thus `--copies 3` means three total events rather than the original
+  row plus three additional events.
+- Each transformed request CSV is sorted by numeric `rq_time`; requests with
+  the same time retain their original row order and each row's replicas remain
+  adjacent. Its `request_id` is regenerated as contiguous integers, starting
+  at zero by default or at `--id-start`. This avoids ID collisions in FleetPy's
+  request, broker, and result-recording path.
+- Run from the repository root, for example:
+  `python src/preprocessing/demand/replicate_demand.py data/demand/Munich_PV_2020/matched/Aimsun_Munich_2020/d_1000.csv --copies 3`.
+
+## `src/infra/RoadPricing.py`, `src/infra/NetworkZoning.py`, and `src/demand/TravelerModels.py`
+
+### Pre-set scheduled zone tariffs for PV mode choice
+
+- Added 2026-07-29 +02:00 (Europe/Berlin). The Munich tariff dataset
+  `scheduled_zone_tariff_val1.csv` is a time-of-day cordon validation policy.
+  It charges only on a transition into a new zone (never in zone 5): free
+  overnight and daytime, shoulder charges from 06:30--07:15 and 08:15--09:00,
+  a 07:15--08:15 morning peak of 300 cent in zones 0/2/3, 600 cent in zone 1,
+  and 200 cent in zone 4, plus a provisional 15:30--18:30 evening peak of
+  250/500/150 cent respectively. It is intended to be selected explicitly by
+  a scenario through `rp_tariff_schedule_file`; no scenario configuration was
+  changed when the dataset was added.
+- Added 2026-07-29 +02:00 (Europe/Berlin). `ScheduledZoneTariffPricing`
+  implements the `scheduled_zone_tariff` policy. The scenario selects
+  `rp_charge_type` (`cordon` or `distance`), `rp_tariff_basis`
+  (`time_of_day` or `mfd_speed`), and one CSV schedule file.
+- The required schedule columns are `charge_type`, `tariff_basis`, `zone_id`,
+  `time_start`, `time_end`, `speed_min_kmh`, `speed_max_kmh`, `speed_band`,
+  `entry_fee_cent`, and `distance_rate_cent_per_m`. `time_of_day` tariffs must
+  cover the simulation horizon; `mfd_speed` tariffs define contiguous speed
+  bands from zero to an unbounded final range for every MFD zone.
+- A cordon tariff applies once at each transition into a new zone, excluding a
+  route's initial zone. A distance tariff sums each contiguous origin-zone
+  route segment's distance times the rate at its projected entry time. Both
+  forms round only the complete route total to cents.
+- `NetworkZoneSystem.get_pv_route_toll_cost` delegates to the scheduled policy
+  while its existing generic toll interface remains available to fleet-control
+  code. `MultinomialLogitRequest` now prefers that PV-specific interface, so
+  the scheduled tariff enters only the PV utility and `included_toll`; MoD
+  fare and operating toll calculations remain unchanged.
+- `mfd_speed` reads `NetworkBasic.get_current_zone_mfd_speeds()`, the read-only
+  snapshot already calculated for network edge travel times, once per network
+  pricing update and caches the selected tariff for PV quotations. The
+  `rp_tariff_update_interval` interface defaults to 300 seconds; Munich sets
+  it explicitly to 300, so network TTs may continue updating every simulation
+  step while the region tariff remains fixed for five minutes. The policy also
+  exposes `set_update_interval(seconds)` for programmatic adjustment. It does
+  not use a reference MFD trajectory or recalculate a speed per PV.
+- The Munich scenario comments document the two supported charge choices
+  (`cordon`, `distance`) and tariff bases (`time_of_day`, `mfd_speed`), and
+  clarify that the refresh interval applies only to MFD-speed tariffs.
+- `road_pricing_method: None` (also `none`, `off`, or `disabled`) explicitly
+  disables road pricing: no policy is created and no PV toll is added.
+- `build_zone_tariff_schedule.py` converts the active MFD parameters into one
+  common range tariff table. It accepts an optional untolled-route distance
+  summary (`zone_id,mean_in_zone_distance_m`) to turn distance rates into
+  comparable cordon fees. Munich activates `distance/mfd_speed` from
+  `data/zones/Munich_reservoirs/Aimsun_Munich_2020/munich_zone_tariffs.csv`.
+
 ## Local GitHub credential recovery
 
 - Updated 2026-07-27 +02:00 (Europe/Berlin).

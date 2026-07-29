@@ -889,12 +889,15 @@ class MultinomialLogitRequest(RequestBase):
         zone_system = getattr(self.routing_engine, "zones", None)
         if zone_system is None:
             return 0
-        if not hasattr(zone_system, "get_route_toll_cost"):
+        pv_toll_getter = getattr(zone_system, "get_pv_route_toll_cost", None)
+        if not callable(pv_toll_getter):
+            pv_toll_getter = getattr(zone_system, "get_route_toll_cost", None)
+        if not callable(pv_toll_getter):
             return 0
         route = self.routing_engine.return_best_route_1to1(self.o_pos, self.d_pos)
         if not route:
             return 0
-        return int(zone_system.get_route_toll_cost(self.routing_engine, simulation_time, route))
+        return int(pv_toll_getter(self.routing_engine, simulation_time, route))
 
     def _compute_external_mode_utilities(self, simulation_time):
         """Compute utilities for non-MOD modes that are always available to the traveller."""

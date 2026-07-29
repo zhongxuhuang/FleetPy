@@ -79,6 +79,10 @@ G_RP_BASE_TOLL_COEFF = "rp_base_toll_coeff"
 G_RP_MAX_TOLL_COEFF = "rp_max_toll_coeff"
 G_RP_UPDATE_INT = "rp_update_interval"
 G_RP_FALLBACK = "rp_mfd_fallback"
+G_RP_CHARGE_TYPE = "rp_charge_type"
+G_RP_TARIFF_BASIS = "rp_tariff_basis"
+G_RP_TARIFF_SCHEDULE_F = "rp_tariff_schedule_file"
+G_RP_TARIFF_UPDATE_INT = "rp_tariff_update_interval"
 
 # broker specific attributes
 G_BROKER_TYPE = "broker_type"
