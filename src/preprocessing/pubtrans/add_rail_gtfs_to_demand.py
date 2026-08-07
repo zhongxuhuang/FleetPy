@@ -58,6 +58,13 @@ from pyproj import Transformer
 from scipy.spatial import cKDTree
 
 try:
+    from numba import njit
+except ImportError:
+    NUMBA_AVAILABLE = False
+else:
+    NUMBA_AVAILABLE = True
+
+try:
     from tqdm import tqdm
 except ImportError:
     def tqdm(iterable, total=None, desc=None, unit=None):
@@ -179,19 +186,48 @@ class RailGTFSODTravelTimePreprocessor:
         destination_candidates = to_indexed_candidates(
             self.candidate_cache.get(int(end_node), []), self.station_to_idx, self.walking_speed
         )
-        duration_min, transfers = compute_earliest_arrival(
-            effective_rq_time,
-            origin_candidates,
-            destination_candidates,
-            self.conn_from,
-            self.conn_to,
-            self.conn_trip,
-            self.conn_dep,
-            self.conn_arr,
-            len(self.station_to_idx),
-            self.n_trips,
-            self.transfer_buffer_s,
-        )
+        if NUMBA_AVAILABLE:
+            origin_station_indices = np.fromiter(
+                (station_idx for station_idx, _ in origin_candidates), dtype=np.int64
+            )
+            origin_access_times = np.fromiter(
+                (access_time for _, access_time in origin_candidates), dtype=np.float64
+            )
+            destination_station_indices = np.fromiter(
+                (station_idx for station_idx, _ in destination_candidates), dtype=np.int64
+            )
+            destination_egress_times = np.fromiter(
+                (egress_time for _, egress_time in destination_candidates), dtype=np.float64
+            )
+            duration_min, transfers = compute_earliest_arrival_numba(
+                effective_rq_time,
+                origin_station_indices,
+                origin_access_times,
+                destination_station_indices,
+                destination_egress_times,
+                self.conn_from,
+                self.conn_to,
+                self.conn_trip,
+                self.conn_dep,
+                self.conn_arr,
+                len(self.station_to_idx),
+                self.n_trips,
+                self.transfer_buffer_s,
+            )
+        else:
+            duration_min, transfers = compute_earliest_arrival(
+                effective_rq_time,
+                origin_candidates,
+                destination_candidates,
+                self.conn_from,
+                self.conn_to,
+                self.conn_trip,
+                self.conn_dep,
+                self.conn_arr,
+                len(self.station_to_idx),
+                self.n_trips,
+                self.transfer_buffer_s,
+            )
         self.request_cache[cache_key] = (duration_min, transfers)
         return duration_min, transfers
 
@@ -470,6 +506,89 @@ def compute_earliest_arrival(
     total_duration_min = (best_arrival - float(rq_time)) / 60.0
     nr_transfers = max(best_boardings - 1, 0)
     return total_duration_min, nr_transfers
+
+
+if NUMBA_AVAILABLE:
+
+    @njit(cache=True)
+    def compute_earliest_arrival_numba(
+        rq_time,
+        origin_station_indices,
+        origin_access_times,
+        destination_station_indices,
+        destination_egress_times,
+        conn_from,
+        conn_to,
+        conn_trip,
+        conn_dep,
+        conn_arr,
+        n_stations,
+        n_trips,
+        transfer_buffer_s,
+    ):
+        """Compiled equivalent of ``compute_earliest_arrival`` for large demand files."""
+        if len(origin_station_indices) == 0 or len(destination_station_indices) == 0:
+            return np.nan, np.nan
+
+        inf = np.inf
+        large = 10**9
+        station_arrival = np.full(n_stations, inf)
+        station_boardings = np.full(n_stations, large, dtype=np.int64)
+        trip_boardings = np.full(n_trips, large, dtype=np.int64)
+
+        min_ready_time = inf
+        for candidate_index in range(len(origin_station_indices)):
+            station_idx = origin_station_indices[candidate_index]
+            ready_time = rq_time + origin_access_times[candidate_index]
+            if ready_time < station_arrival[station_idx]:
+                station_arrival[station_idx] = ready_time
+                station_boardings[station_idx] = 0
+            if ready_time < min_ready_time:
+                min_ready_time = ready_time
+
+        start_i = np.searchsorted(conn_dep, min_ready_time, side="left")
+        best_arrival = inf
+        best_boardings = large
+
+        for i in range(start_i, len(conn_dep)):
+            if conn_dep[i] > best_arrival:
+                break
+            from_idx = conn_from[i]
+            to_idx = conn_to[i]
+            trip_idx = conn_trip[i]
+
+            current_trip_boardings = trip_boardings[trip_idx]
+            can_board_from_station = station_arrival[from_idx] < inf
+            if can_board_from_station:
+                buffer_s = 0.0 if station_boardings[from_idx] == 0 else transfer_buffer_s
+                can_board_from_station = conn_dep[i] >= station_arrival[from_idx] + buffer_s
+
+            if current_trip_boardings >= large and not can_board_from_station:
+                continue
+
+            boardings = current_trip_boardings
+            if can_board_from_station and station_boardings[from_idx] + 1 < boardings:
+                boardings = station_boardings[from_idx] + 1
+            if boardings < trip_boardings[trip_idx]:
+                trip_boardings[trip_idx] = boardings
+
+            if conn_arr[i] < station_arrival[to_idx] or (
+                conn_arr[i] == station_arrival[to_idx] and boardings < station_boardings[to_idx]
+            ):
+                station_arrival[to_idx] = conn_arr[i]
+                station_boardings[to_idx] = boardings
+                for candidate_index in range(len(destination_station_indices)):
+                    if to_idx == destination_station_indices[candidate_index]:
+                        total_arrival = conn_arr[i] + destination_egress_times[candidate_index]
+                        if total_arrival < best_arrival or (
+                            total_arrival == best_arrival and boardings < best_boardings
+                        ):
+                            best_arrival = total_arrival
+                            best_boardings = boardings
+
+        if best_arrival == inf:
+            return np.nan, np.nan
+        return (best_arrival - rq_time) / 60.0, max(best_boardings - 1, 0)
 
 
 def augment_demand(args):
