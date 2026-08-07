@@ -4,6 +4,289 @@ This document records source-level changes, equations, and implementation notes
 for files that require quick future reference. Add a new top-level entry for each
 additional source file.
 
+## `data/demand/Munich_PV_2020/matched/Aimsun_Munich_2020/rq_munich_matsim_5x.csv`
+
+### Fivefold MATSim request-demand expansion
+
+- Added 2026-08-06 +02:00 (Europe/Berlin). This generated CSV preserves the
+  source request order from `rq_munich_matsim.csv`, writes five consecutive
+  copies of each request, and regenerates `request_id` consecutively from zero.
+  The source file remains unchanged.
+
+## `data/demand/Munich_PV_2020/matched/Aimsun_Munich_2020/rq_munich_matsim_10x.csv`
+
+### Tenfold MATSim request-demand expansion
+
+- Added 2026-08-07 +02:00 (Europe/Berlin). This generated CSV preserves the
+  source request order from `rq_munich_matsim.csv`, writes ten consecutive
+  copies of each request, and regenerates `request_id` consecutively from zero.
+  The source file remains unchanged.
+
+## `src/preprocessing/networks/add_nearest_aimsum_node.py`
+
+### AIMSUM nearest-node annotation
+
+- Added 2026-08-02 +02:00 (Europe/Berlin). The command-line utility copies
+  `node_trip_nonzero_euclidean.csv` to
+  `node_trip_nonzero_euclidean_with_aimsum_index.csv` by default, retaining
+  every original field and appending `aimsum_pos_x`, `aimsum_pos_y`, and
+  `aimsum_node_index`.  These values are copied from the closest `(pos_x,
+  pos_y)` row of `node_AIMSUM.csv` using Euclidean distance in the source
+  projected-coordinate units.
+- The utility validates finite coordinates and required headers, detects comma,
+  tab, or semicolon input delimiters, and writes atomically.  Existing outputs
+  are protected unless `--overwrite` is passed.  A balanced two-dimensional
+  k-d tree makes the exact nearest-neighbour lookup practical for the supplied
+  node tables; equal distances use the first reference-node row.
+
+## `src/preprocessing/networks/create_aimsum_gtfs_demand.py` and `src/preprocessing/pubtrans/add_rail_gtfs_to_demand.py`
+
+### AIMSUM request conversion with rail-GTFS attributes
+
+- Added 2026-08-02 +02:00 (Europe/Berlin). `create_aimsum_gtfs_demand.py`
+  streams `rq_muechen_nonzero_euclidean.csv`, maps each exact origin and
+  destination coordinate through
+  `node_trip_nonzero_euclidean_with_aimsum_index.csv`, and writes
+  `rq_muechen_nonzero_euclidean_aimsum.csv`. The output contains only
+  `request_id`, `rq_time`, `start`, `end`, `gtfs_total_duration_min`, and
+  `nr_transfers`; IDs are regenerated from zero in source-row order, and an
+  unavailable rail route has blank GTFS fields.
+- The converter uses the existing rail-GTFS logic and its defaults: active
+  2026-07-06 services, Tram/S-Bahn, U-Bahn, and Regionalbahn routes, a 1000 m
+  access/egress radius, 1.4 m/s walking speed, and a 120 s transfer buffer.
+  It validates mappings and coordinates, processes requests sequentially
+  without loading the 86 MB request source into memory, and atomically writes
+  a protected output file.
+- Updated 2026-08-02 +02:00 (Europe/Berlin).
+  `RailGTFSODTravelTimePreprocessor.compute_request` now calls an optional
+  Numba-compiled implementation of the existing connection-scan calculation
+  when Numba is installed. The compiled path retains the same earliest-arrival
+  and equal-arrival/fewer-transfer rules; installations without Numba retain
+  the original Python implementation.
+
+## `src/preprocessing/networks/find_rq_inside_munich.py`
+
+### Munich request filtering from node coordinates
+
+- Added 2026-07-31 +02:00 (Europe/Berlin). The command-line utility compares
+  every input trip's `(origin_x, origin_y)` and `(destination_x, destination_y)`
+  pairs against the `(pos_x, pos_y)` pairs in `node_info_munich.csv`. It retains
+  a row only when both pairs occur in the reference-node set.
+- It writes `rq_inside_munich.csv` in this directory by default, with only
+  `request_id`, `rq_time`, `origin_x`, `origin_y`, `destination_x`, and
+  `destination_y`. `rq_time` is the input `departure_time`; rows are sorted by
+  its numeric value (keeping input order for ties) and receive contiguous IDs
+  beginning at zero.
+- The input and node CSV delimiters are detected among comma, tab, and
+  semicolon. Updated 2026-07-31 +02:00 (Europe/Berlin): matching used raw
+  coordinate texts. Updated 2026-07-31 +02:00 (Europe/Berlin): reference-node
+  exports can truncate projected coordinates, so matching now uses validated
+  `Decimal` coordinates and a spatial grid with a default absolute x/y
+  tolerance of `0.000001` metres (configurable with
+  `--coordinate-tolerance-m`). This preserves membership when only exported
+  precision differs while avoiding a scan of every reference node per trip.
+  The output retains every input trip field, prepends regenerated
+  `request_id` and `rq_time` (from `departure_time`), and remains sorted by
+  numeric departure time. Existing outputs are protected unless `--overwrite`
+  is passed.
+- Updated 2026-07-31 +02:00 (Europe/Berlin): the current defaults are
+  `node_info_muechen.csv` and `rq_muechen.csv`; the earlier filename wording
+  above described the initial implementation rather than the current defaults.
+- Updated 2026-07-31 +02:00 (Europe/Berlin): after filtering, the utility also
+  writes `node_trip.csv` by default. It deduplicates retained origin and
+  destination coordinate pairs in the sorted request order, then writes
+  `node_index`, `is_stop_only=False`, blank `source_node_id`, `pos_x`, and
+  `pos_y`. `--node-trip-file` selects another path; it may not equal
+  `--output-file`.
+- Updated 2026-07-31 +02:00 (Europe/Berlin): `euclidean_distance` is now
+  required and trips whose validated numeric Euclidean distance is exactly zero
+  are excluded. Endpoint-node output is now opt-in through `--node-trip-file`,
+  so a trip-only run does not create or replace a node CSV.
+
+## `src/preprocessing/networks/remove_point_outsite_zone.py`
+
+### Munich municipality point filtering
+
+- Added 2026-07-31 +02:00 (Europe/Berlin). The command-line utility retains
+  only point features that lie within at least one Polygon or MultiPolygon
+  feature of a zone GeoJSON, including an exterior boundary. It writes a new
+  GeoJSON atomically and will not replace an existing destination unless
+  `--overwrite` is specified.
+- Its defaults filter `node_upperbavaria.geojson` against
+  `data/zones/Munich_Municipalities/polygon_definition.geojson` and write
+  `node_upperbavaria_inside_munich_municipalities.geojson`. The supplied node
+  geometry is EPSG:3857 whereas the zone file is EPSG:32632; default membership
+  checks therefore use `pos_x` and `pos_y`, which are the node file's EPSG:32632
+  coordinates. `--geometry-coordinates` is available only for matching CRS
+  inputs.
+- The implementation uses only the Python standard library. It validates input
+  FeatureCollections and coordinates, supports polygon holes, and preserves all
+  retained source-feature fields and the point collection's original CRS.
+
+## `src/preprocessing/networks/create_node_from_csv.py`
+
+### Node table creation from trip coordinates
+
+- Added 2026-07-30 +02:00 (Europe/Berlin). The command-line utility reads a
+  column-based trip CSV containing `origin_x`, `origin_y`, `destination_x`, and
+  `destination_y`, then writes `node_info.csv` beside the script by default.
+  It emits `node_index`, `is_stop_only`, `source_node_id`, `pos_x`, and
+  `pos_y`; node indices start at zero, `is_stop_only` is always `False`, and
+  `source_node_id` is blank.
+- Origin and destination coordinate pairs are processed in input row order and
+  deduplicated together. Updated 2026-07-31 +02:00 (Europe/Berlin): both
+  coordinates must have exactly identical input text to match. This includes all
+  digits after the decimal point, including trailing zeroes. The first input
+  coordinate strings are written unchanged, including their decimal precision
+  and whitespace. The input delimiter is detected among comma, semicolon, and
+  tab, and missing, non-numeric, or non-finite coordinates fail with a
+  row-specific error.
+
+## `studies/mt/plot_compare_60x.py`
+
+### Three-scenario pricing comparison by zone
+
+- Added 2026-07-30 +02:00 (Europe/Berlin). The script compares
+  `mt_test_60x_base`, `mt_test_60x_mfd`, and `mt_test_60x_time`,
+  writing reproducible figures and source CSV tables to the baseline run's
+  `compare/` directory by default. It produces origin-zone mode shares,
+  accumulation and average-speed time series, road-mode delay time series, and
+  mean selected generalized cost by origin zone and mode.
+- MFD zones 0--4 are included by default; zone 5 is omitted because it has no
+  MFD parameters. `--include-zone-5` retains its directly exported traffic
+  data in applicable figures but does not manufacture an MFD congestion line.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Each comparison topic now has
+  its own output folder (`mode_share`, `accumulation`, `speed`, `delay`, and
+  `generalized_cost`) and writes one PNG plus its source CSV for every zone.
+  Scenario metadata is in `metadata/`, while the MFD threshold table is kept
+  with the accumulation comparison.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Time-series axes begin exactly
+  at the configured simulation start time and use 30-minute clock ticks. The
+  baseline uses a black series; scenario legends are below the plotting area.
+  Mode-share and generalized-cost bars have no horizontal grid lines and show
+  their finite values immediately above each bar.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). `OTHER` is excluded from the
+  mode-share and generalized-cost comparison categories because these runs
+  have no selected requests in that category. The three scenario colors are
+  harmonized as charcoal (`#2f3437`), academic blue (`#3b6ea5`), and brick red
+  (`#b35c4e`) across every comparison figure.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Every origin-zone mode-share
+  title now gives its three scenario request totals, while `mode_share/overall`
+  reports the share over all requests. Their source CSV files include both
+  per-mode and total request counts. The generalized-cost comparison converts
+  the simulation's euro-cent monetary units to euro (`/ 100`) in both its plot
+  and CSV output; its axis and data labels use `€`. All comparison y-axes now
+  explicitly identify their displayed unit.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Figure legends and output tables
+  use the policy descriptions `No road pricing`, `MFD-responsive cordon pricing`,
+  and `Time-of-day cordon pricing`. When request totals match across scenarios,
+  mode-share titles use one `Requests per scenario` note that explicitly states
+  their equality rather than repeating the same count three times.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). The third comparison input is now
+  `mt_test_60x_mfd` rather than `mt_test_60x_distance_time`; its label is
+  `MFD-responsive cordon pricing`. Time-of-day shading remains in the figures
+  solely as a reference for the scheduled cordon scenario, because MFD pricing
+  can change in any simulation period.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). `distance_distribution/overall`
+  now uses only `mt_test_60x_base`, because the same request cohort produces an
+  identical distance distribution in all compared policies. Its title is
+  `Distance distribution`, and every bar is labelled with its request count.
+  The bar height remains the percentage share of all requests, and the
+  upper-right annotation reports the total request count.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). The comparison now produces one
+  `pricing/zone_<id>` time series per zone using only the two priced scenarios;
+  it reads the recorded cordon charge from `5_road_pricing_info.csv` and does
+  not plot a synthetic zero-price baseline. Accumulation and average-speed
+  panels now add a blue right density axis:
+  accumulation converts `N` to `k = N / L_z`, while speed converts
+  `v` to `k = (v_free - v) / gamma`.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). The right-hand density `k` axis
+  is a common zone-MFD scale for every scenario curve in a panel, rather than
+  being restricted to the MFD-responsive pricing curve. Its label is now
+  simply `Density k (veh/km)`; the blue styling identifies the MFD scale, not
+  a single data series.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Comparison figures use larger
+  12-by-7-inch canvases and 18-point titles. Equal request totals are now
+  annotated only as `Requests per scenario: <count>`. Legends have no frame;
+  generalized-cost bar labels show numeric euro values without a repeated `€`
+  symbol, while the axis retains the euro unit.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Typography now scales with the
+  enlarged canvas: 22-point titles, 18-point axis labels, 15-point ticks and
+  legends, and 12-point value/critical annotations. PNG exports use 300 DPI.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Bar-top labels are vertically
+  staggered by scenario to prevent enlarged labels for neighbouring bars with
+  similar values from overlapping; the 28-point separation keeps the enlarged
+  labels distinct in closely matched bars.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Replaced the wide vertical
+  staggering with a 10-point directly-above-bar label: this remains larger than
+  the original labels while preserving an unambiguous association with each
+  bar.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Speed-panel annotations report
+  the exact two-decimal congestion threshold with `km/h` (for example, Zone 0
+  is `9.53 km/h`) rather than a rounded integer that can appear inconsistent
+  with its horizontal line. Accumulation annotations now state their equivalent
+  vehicle unit as well.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Average-speed panels use a
+  dedicated 15-by-9-inch canvas, 24-point title, 1.8-point scenario lines, and
+  12% vertical margins to make the trajectories, threshold, and external
+  legend less crowded. The remaining comparison topics keep their 12-by-7-inch
+  layout.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Accumulation panels now use the
+  same enlarged 15-by-9-inch layout, 24-point title, thicker lines, and
+  vertical margin. Their threshold annotation uses the concise unit `vehicles`
+  rather than `equivalent vehicles`.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Scenario output order is now
+  no-road-pricing (charcoal), time-of-day cordon pricing (brick red), and
+  time-of-day distance pricing (blue). The order applies consistently to
+  grouped bars, line-plot legends, annotations, and exported comparison CSVs.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). All time-series comparisons shade
+  the scheduled pricing windows over their full plot height: 06:30--07:15 and
+  08:15--09:00 in light blue, with the 07:15--08:15 morning peak in a slightly
+  deeper light blue. Accumulation, average-speed, and road-mode-delay plots now
+  have an explicit y-axis lower bound of zero.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). All figure canvases have added
+  vertical space without changing the data-axis scaling: standard panels are
+  12-by-8.25 inches and enlarged traffic panels are 15-by-10.5 inches. Titles
+  use a 26-point pad and the export layout reserves a 6% top margin, moving
+  titles upward while leaving sufficient room for multi-line annotations.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Time-series x-axis tick labels
+  use a 10-point pad and `Time of day` uses a 22-point label pad, lowering both
+  and separating them from one another. Mode-share request totals are no longer
+  a second title line; they are compact 12-point annotations at the upper-right
+  of the plotting area, matching the placement of congestion-threshold notes.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). The comparison script now reuses
+  each scenario's `choice_distribution_by_distance.csv` to create a direct
+  distance-distribution comparison and one mode-share comparison for every
+  populated distance band. These outputs are written to
+  `distance_distribution/` and `mode_share_by_distance/`, respectively.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). When a distance band has unequal
+  scenario request counts, its compact upper-right annotation uses the ordered
+  `No pricing / Cordon / Distance` labels and a 10-point font so it remains
+  legible without overlapping the plotting area.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). Distance-distribution and
+  distance-conditioned mode-share comparisons now use a fixed
+  `request_id -> baseline direct-route distance band` mapping. This validates
+  that every scenario contains the same unique request IDs and places each ID
+  in the identical cohort for every policy. The former scenario-specific
+  `choice_distribution_by_distance.csv` grouping could move requests between
+  bands when dynamic routing recalculated their direct-route distance.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). The fixed-cohort distance
+  distribution is retained, while distance-conditioned mode-share titles use
+  the concise wording `Mode share by distance: <band>`.
+- The congestion annotations use `v_critical = v_free / 2` and
+  `N_critical = (v_free / (2 * gamma)) * L_zone`, where zone length is the
+  sum of outgoing network-edge distances assigned to the source zone. The
+  traffic records use the run's existing vehicle counts.
+- Delay is evaluated only for PV and MOD selected trips as
+  `max(selected_mode_travel_time - direct_route_travel_time, 0)` and averaged
+  in 15-minute request-time bins by origin zone. This avoids interpreting the
+  inherently slower non-road alternatives as road congestion delay. Selected
+  generalized cost is reconstructed from the recorded selected utility as
+  `(ASC_selected - U_selected) / beta_money`, consistent with the existing
+  welfare analysis. Validated 2026-07-30 +02:00 (Europe/Berlin) against the
+  three named result directories; the common figure writer reserves space for
+  and preserves the shared scenario legend in the output bounds.
+
 ## `studies/mt/plot_all_metrics.py`
 
 ### One-command single-scenario metrics generation
@@ -59,13 +342,30 @@ additional source file.
 
 - Added 2026-07-29 +02:00 (Europe/Berlin). The Munich tariff dataset
   `scheduled_zone_tariff_val1.csv` is a time-of-day cordon validation policy.
+  Updated 2026-07-30 +02:00 (Europe/Berlin): zones 0--4 now share zone 1's
+  fee in every charging window, for a uniform priced-versus-unpriced test.
+  The same file now also contains the `distance/time_of_day` rows used by
+  `mt_test_60x_distance_time`: zones 0--4 use 0.10 cent/m in the shoulder
+  periods, 0.20 cent/m in the morning peak, 0.1666666667 cent/m in the evening
+  peak, and zero otherwise; zone 5 remains zero. These rates equal the uniform
+  cordon fees for a 3 km in-zone trip.
+  Updated 2026-07-30 +02:00 (Europe/Berlin): it additionally contains
+  `cordon/mfd_speed` rows for an MFD-responsive test. For zones 0--4 the
+  cordon charge is zero below `0.75 * k_critical`, 150 cent from `0.75` to
+  `1.00 * k_critical`, 300 cent from `1.00` to `1.25 * k_critical`, and
+  600 cent at or above `1.25 * k_critical`; the stored speed boundaries are
+  the exact equivalent of those density bands. Zone 5 remains an outside,
+  zero-charge row.
   It charges only on a transition into a new zone (never in zone 5): free
   overnight and daytime, shoulder charges from 06:30--07:15 and 08:15--09:00,
-  a 07:15--08:15 morning peak of 300 cent in zones 0/2/3, 600 cent in zone 1,
-  and 200 cent in zone 4, plus a provisional 15:30--18:30 evening peak of
-  250/500/150 cent respectively. It is intended to be selected explicitly by
-  a scenario through `rp_tariff_schedule_file`; no scenario configuration was
-  changed when the dataset was added.
+  at 300 cent, a 07:15--08:15 morning peak at 600 cent, and a provisional
+  15:30--18:30 evening peak at 500 cent. It is intended to be selected
+  explicitly by a scenario through `rp_tariff_schedule_file`; no scenario
+  configuration was changed when the dataset was added.
+- Updated 2026-07-30 +02:00 (Europe/Berlin). `scenario_cfg_mt.csv` retains
+  `mt_test_60x_time` with `rp_charge_type=cordon` and adds
+  `mt_test_60x_distance_time` with `rp_charge_type=distance`; both inherit the
+  same scheduled time-of-day policy and all non-pricing parameters.
 - Added 2026-07-29 +02:00 (Europe/Berlin). `ScheduledZoneTariffPricing`
   implements the `scheduled_zone_tariff` policy. The scenario selects
   `rp_charge_type` (`cordon` or `distance`), `rp_tariff_basis`
@@ -186,30 +486,17 @@ additional source file.
   choice; setting it to `True` restores fixed-background-PV behavior.
   `scenario_cfg_mt_all_mnl.csv` explicitly keeps the all-MNL MT trial. This
   switch changes classification only and does not apply demand scaling.
-- Updated 2026-07-28 +02:00 (Europe/Berlin). The optional scenario mapping
-  `mfd_exogenous_density_veh_per_km` adds a static, MFD-only density to an
-  MFD-equipped zone. It affects its MFD speed, PV priority-queue speed, dynamic
-  edge TT, and myopic MFD price, but it creates no vehicle, route, user record,
-  PV queue entry, or MoD count. `scenario_cfg_mt_exogenous70.csv` configures
-  zone 0--4 at approximately `0.7 * k_critical` (35.1, 35.6, 34.6, 36.0, and
-  48.8 veh/km), respectively, while retaining `rq_pv_as_background=True` so
-  fixed background-PV assignment remains available. Zone 5 has no MFD and no
-  such background.
 - `zone_speed_timeseries.csv` now additionally records
   `pv_vehicle_count`, `mod_vehicle_count`, and `speed_source`. A non-MFD zone
   using this queue fallback has `speed_source=fixed_base_tt`; MFD zones retain
   `speed_source=mfd`.
-- `zone_speed_timeseries.csv` additionally distinguishes `vehicle_count`
-  (real PV plus moving MoD), `exogenous_vehicle_count`, and
-  `mfd_vehicle_count` (their sum). The road-pricing output contains the same
-  count distinction while its density is the MFD density.
 - Added `studies/mt/scenarios/scenario_cfg_mt_fixed_zone5.csv` for a separate
   all-PV validation run whose output directory is
   `mt_d1000_00_24_all_pv_fixed_zone5`.
 - For `q(k) = v_free*k - gamma*k^2`, the maximum-flow critical density is
   `k_critical = v_free / (2 * gamma)`. Myopic coefficients use
   `min(max_coeff, base_coeff * k_current / k_critical)`, where
-  `k_current = N_z / L_z + k_exogenous,z` in veh/km. Thus the coefficient is below the base at
+  `k_current = N_z / L_z` in veh/km. Thus the coefficient is below the base at
   low density, equals it at critical density, and rises linearly after the MFD
   maximum-flow point until capped. Missing parameters, vehicle counts, or zone
   lengths follow `rp_mfd_fallback` (`zero` in the Munich alternative).
@@ -331,7 +618,7 @@ additional source file.
 | Compared against | Current working tree, including uncommitted changes |
 | Baseline-to-current diff | 675 insertions, 51 deletions |
 | Created | 2026-07-14 21:17:14 +02:00 (Europe/Berlin) |
-| Last updated | 2026-07-28 +02:00 (Europe/Berlin) |
+| Last updated | 2026-08-02 +02:00 (Europe/Berlin) |
 
 Line numbers below refer to the source snapshot recorded above. Function names
 are the stable references when later edits shift line numbers.
@@ -440,7 +727,7 @@ are the stable references when later edits shift line numbers.
 | Queue-entry projection | `_register_zone_trip` (`:584-635`) | `Δt_projected = max(t_start - t_last, 0)`; `z_projected = z + Δt_projected * v` | Computes queue progress at a PV segment's entry time before it is inserted. |
 | PV completion threshold | `_register_zone_trip` (`:584-635`) | `θ = distance_remaining + z_projected`; complete when `θ <= z` | Stores each PV segment's required cumulative progress in a min-heap and determines when it leaves the zone. |
 | Total zone vehicles | `_refresh_total_zone_vehicle_counts` (`:735-749`) | `N_z = N_PV,z + N_MoD,z` | Gives the MFD and dynamic-TT update the total current number of vehicles in each zone. |
-| MFD vehicle-count conversion | `_get_zone_to_edge_cache` (`:354-379`); `NetworkZoneSystem.get_mfd_average_speed` | `k_z = N_z / L_z + k_exogenous,z` | Converts real simulated counts plus optional static MFD-only background density to the fitted MFD density in veh/km. |
+| MFD vehicle-count conversion | `_get_zone_to_edge_cache` (`:354-379`); `NetworkZoneSystem.get_mfd_average_speed` | `k_z = N_z / L_z` | Converts the current simulated vehicle count to the fitted MFD density in veh/km. |
 | Edge-position interpolation | `return_position_coordinates` (`:850-863`) | `coord = rel_pos * coord_destination + (1 - rel_pos) * coord_origin` | Converts an in-edge network position into metric coordinates. |
 | Partial-edge movement | `move_along_route` (`:1392-1464`) | `t_next = t_last + (1 - rel_pos) * tt_edge`; `rel_end = (t_end - t_last) / tt_edge + rel_pos` | Advances a vehicle along a partially traversed edge within one simulation time step. |
 
@@ -479,13 +766,9 @@ system directory. Its required fields are `zone_id`, `mfd_type`, `v_kmh`, and
 finite positive coefficients, and the supported type.
 
 The routing engine supplies directed road lengths so the implementation can
-evaluate `k_z = N_z / L_z + k_exogenous,z` and
-`v_z = max((v_kmh - gamma * k_z) / 3.6, 0.1)`. The optional scenario mapping
-`mfd_exogenous_density_veh_per_km` is validated as non-negative zone densities;
-it applies only to zones with an MFD and is converted to an equivalent vehicle
-count only for MFD calculations and output. If the CSV is absent or a zone has
-no row, that zone has no MFD speed and its existing edge travel times remain
-unchanged.
+evaluate `k_z = N_z / L_z` and
+`v_z = max((v_kmh - gamma * k_z) / 3.6, 0.1)`. A zone without an MFD has no
+MFD speed and retains its existing edge travel times.
 
 ## `src/demand/TravelerModels.py`
 

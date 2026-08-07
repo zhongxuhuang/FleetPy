@@ -3,7 +3,6 @@
 # -----------------------------
 import os
 import logging
-import ast
 
 # additional module imports (> requirements)
 # ------------------------------------------
@@ -34,63 +33,10 @@ class NetworkZoneSystem(ZoneSystem):
         self.current_park_costs = {}
         self.current_park_search_durations = {}
         self.mfd_parameters = self._load_mfd_parameters()
-        self.mfd_exogenous_density_veh_per_km = self._load_mfd_exogenous_density(
-            scenario_parameters.get("mfd_exogenous_density_veh_per_km")
-        )
         # Filled by the routing engine once it has assigned network edges to
         # zones. The fitted MFDs use density [veh/km], whereas FleetPy tracks
         # an absolute vehicle count per zone.
         self.mfd_network_lengths_km = {}
-
-    def _load_mfd_exogenous_density(self, configured_density):
-        """Validate the optional static MFD-only background density mapping.
-
-        The mapping is deliberately stored as density rather than as a vehicle
-        count, because the effective count depends on the directed network
-        length assigned by the routing engine after the network is loaded.
-        """
-        if configured_density is None or configured_density == "":
-            return {}
-        if isinstance(configured_density, str):
-            try:
-                configured_density = ast.literal_eval(configured_density)
-            except (ValueError, SyntaxError) as exc:
-                raise ValueError(
-                    "mfd_exogenous_density_veh_per_km must be a zone-to-density mapping"
-                ) from exc
-        if not isinstance(configured_density, dict):
-            raise TypeError(
-                "mfd_exogenous_density_veh_per_km must be a mapping of zone IDs to veh/km"
-            )
-
-        densities = {}
-        valid_zones = set(self.zones)
-        for raw_zone_id, raw_density in configured_density.items():
-            try:
-                zone_id = int(raw_zone_id)
-                density = float(raw_density)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "mfd_exogenous_density_veh_per_km must contain integer zone IDs "
-                    "and numeric densities"
-                ) from exc
-            if zone_id not in valid_zones:
-                raise ValueError(
-                    "mfd_exogenous_density_veh_per_km references unknown zone ID "
-                    f"{zone_id}"
-                )
-            if not np.isfinite(density) or density < 0:
-                raise ValueError(
-                    "mfd_exogenous_density_veh_per_km must contain finite, non-negative densities"
-                )
-            if zone_id not in self.mfd_parameters:
-                LOG.warning(
-                    "Ignoring mfd_exogenous_density_veh_per_km for zone %s because it has no MFD",
-                    zone_id,
-                )
-                continue
-            densities[zone_id] = density
-        return densities
 
     def _load_mfd_parameters(self):
         """Load optional parabolic MFD parameters from the zone directory.
@@ -192,19 +138,6 @@ class NetworkZoneSystem(ZoneSystem):
             if length is not None and np.isfinite(length) and length > 0
         }
 
-    def get_mfd_exogenous_vehicle_count(self, zone_id):
-        """Return this zone's static MFD-only background vehicle equivalent."""
-        if zone_id not in self.mfd_parameters:
-            return 0.0
-        network_length_km = self.mfd_network_lengths_km.get(zone_id)
-        if network_length_km is None:
-            return 0.0
-        return self.mfd_exogenous_density_veh_per_km.get(zone_id, 0.0) * network_length_km
-
-    def get_mfd_vehicle_count(self, zone_id, number_vehicles):
-        """Return real vehicles plus the static MFD-only background equivalent."""
-        return max(float(number_vehicles), 0.0) + self.get_mfd_exogenous_vehicle_count(zone_id)
-
     def get_mfd_density(self, zone_id, number_vehicles):
         """Return the density used by the MFD, or ``None`` when unavailable."""
         if zone_id not in self.mfd_parameters:
@@ -212,7 +145,7 @@ class NetworkZoneSystem(ZoneSystem):
         network_length_km = self.mfd_network_lengths_km.get(zone_id)
         if network_length_km is None:
             return None
-        return self.get_mfd_vehicle_count(zone_id, number_vehicles) / network_length_km
+        return max(float(number_vehicles), 0.0) / network_length_km
 
     def get_mfd_average_speed(self, zone_id, number_vehicles):
         """Return the configured MFD average speed in m/s.
