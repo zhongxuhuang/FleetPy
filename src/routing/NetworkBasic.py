@@ -175,8 +175,11 @@ class NetworkBasic(NetworkBase):
         self.current_dijkstra_number = 1    #used in dijkstra-class
         self.sim_time = 0   # TODO #
         self.zones = None   # TODO #
+        self.current_sampled_pv_zone_vehicle_counts = {}
         self.current_pv_zone_vehicle_counts = {}
+        self.current_physical_mod_zone_vehicle_counts = {}
         self.current_mod_zone_vehicle_counts = {}
+        self.current_exogenous_zone_vehicle_counts = {}
         self.current_total_zone_vehicle_counts = {}
         self.zone_mfd_functions = {}
         self._zone_to_edge_cache = None
@@ -279,7 +282,6 @@ class NetworkBasic(NetworkBase):
         :param simulation_time: current simulation time of the dynamic update
         :return: True if at least one edge travel time was updated
         """
-        self._update_current_zone_vehicle_counts(simulation_time)
         zone_to_edges = self._get_zone_to_edge_cache()
         if not zone_to_edges:
             LOG.debug(
@@ -287,6 +289,9 @@ class NetworkBasic(NetworkBase):
                 f"(zones_attached={self.zones is not None})"
             )
             return False
+        # Building the zone-edge cache also supplies the MFD network lengths
+        # needed to convert exogenous density to equivalent vehicle counts.
+        self._update_current_zone_vehicle_counts(simulation_time)
 
         changed_edges = []
         zone_speed_summary = []
@@ -345,8 +350,11 @@ class NetworkBasic(NetworkBase):
                 "simulation_time": simulation_time,
                 "zone_id": zone_id,
                 "vehicle_count": number_vehicles,
+                "sampled_pv_vehicle_count": self.current_sampled_pv_zone_vehicle_counts.get(zone_id, 0),
                 "pv_vehicle_count": self.current_pv_zone_vehicle_counts.get(zone_id, 0),
+                "physical_mod_vehicle_count": self.current_physical_mod_zone_vehicle_counts.get(zone_id, 0),
                 "mod_vehicle_count": self.current_mod_zone_vehicle_counts.get(zone_id, 0),
+                "exogenous_vehicle_count": self.current_exogenous_zone_vehicle_counts.get(zone_id, 0),
                 "avg_speed_mps": avg_speed,
                 "avg_speed_kmh": None if avg_speed is None else avg_speed * 3.6,
                 "speed_source": speed_source,
@@ -526,10 +534,12 @@ class NetworkBasic(NetworkBase):
             self._zone_priority_queue_states[zone_id] = {
                 "E": 0,  # cumulative number of trips that entered this zone
                 "G": 0,  # cumulative number of trips that completed in this zone
+                "sample_E": 0,  # cumulative logical sampled trips entering
+                "sample_G": 0,  # cumulative logical sampled trips completing
                 "z": 0.0,  # cumulative bathtub progress since initialization
                 "v": 0.0 if avg_speed is None else avg_speed,  # current MFD zone speed
                 "last_time": init_time,  # last simulation time at which this state was advanced
-                "heap": []  # (completion threshold, sequence, queued route trip id)
+                "heap": []  # (completion threshold, sequence, queued route trip id, vehicle weight)
             }
             self._log_zone_priority_queue_state(zone_id, "init", init_time)
         return self._zone_priority_queue_states[zone_id]
@@ -593,20 +603,26 @@ class NetworkBasic(NetworkBase):
             state["last_time"] = simulation_time
 
         completed = 0
+        completed_weight = 0.0
+        completed_trip_ids = []
         while state["heap"] and state["heap"][0][0] <= state["z"]:
-            _, _, trip_id = heapq.heappop(state["heap"])
+            _, _, trip_id, vehicle_weight = heapq.heappop(state["heap"])
             completed += 1
+            completed_weight += vehicle_weight
             if trip_id is not None:
-                self._continue_pv_route_trip(trip_id, simulation_time)
+                completed_trip_ids.append(trip_id)
         if completed:
-            state["G"] += completed
+            state["G"] += completed_weight
+            state["sample_G"] += completed
         self._set_pv_zone_vehicle_count_from_priority_queue(zone_id)
+        for trip_id in completed_trip_ids:
+            self._continue_pv_route_trip(trip_id, simulation_time)
         if completed:
             self._log_zone_priority_queue_state(
                 zone_id,
                 "complete",
                 simulation_time,
-                extra=f"dt={delta_t} completed={completed}"
+                extra=f"dt={delta_t} completed={completed} weight={completed_weight}"
             )
         return completed
 
@@ -618,13 +634,20 @@ class NetworkBasic(NetworkBase):
         """
         state = self._get_zone_priority_queue_state(zone_id, self.sim_time)
         active_count = self._get_zone_priority_queue_active_count(state)
+        sampled_active_count = self._get_zone_priority_queue_sampled_active_count(state)
         self.current_pv_zone_vehicle_counts[zone_id] = active_count
+        self.current_sampled_pv_zone_vehicle_counts[zone_id] = sampled_active_count
         self._refresh_total_zone_vehicle_counts()
 
     @staticmethod
     def _get_zone_priority_queue_active_count(state):
-        """Returns the number of active trips in a zone priority queue."""
+        """Returns the active equivalent PV weight in a zone priority queue."""
         return max(state["E"] - state["G"], 0)
+
+    @staticmethod
+    def _get_zone_priority_queue_sampled_active_count(state):
+        """Returns the number of logical sampled PV trips in a zone queue."""
+        return max(state["sample_E"] - state["sample_G"], 0)
 
     def _update_zone_priority_queue_speeds(self):
         """Refreshes PV priority queue speeds using total zone vehicle counts.
@@ -637,8 +660,8 @@ class NetworkBasic(NetworkBase):
             if avg_speed is not None:
                 state["v"] = avg_speed
 
-    def _register_zone_trip(self, zone_id, start_time, travel_distance, number_vehicles=1, trip_ids=None):
-        """Registers PV trips in one zone using the shared priority queue bathtub.
+    def _register_zone_trip(self, zone_id, start_time, travel_distance, vehicle_weight=1.0, trip_id=None):
+        """Register one weighted logical PV trip in a zone bathtub queue.
 
         Each registered trip receives a completion threshold based on the current
         bathtub progress and the remaining travel distance in the zone.
@@ -646,11 +669,17 @@ class NetworkBasic(NetworkBase):
         :param zone_id: zone identifier in which the PV trips are registered
         :param start_time: simulation time at which the trips enter the zone
         :param travel_distance: travel distance covered by the trips inside the zone
-        :param number_vehicles: number of PV trips to register
-        :param trip_ids: queued-PV route trip identifiers, one per vehicle
+        :param vehicle_weight: equivalent vehicle contribution of this sampled trip
+        :param trip_id: queued-PV route trip identifier
         :return: None
         """
-        if zone_id is None or number_vehicles <= 0:
+        try:
+            vehicle_weight = float(vehicle_weight)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("vehicle_weight must be a positive finite number") from exc
+        if not np.isfinite(vehicle_weight) or vehicle_weight <= 0:
+            raise ValueError("vehicle_weight must be a positive finite number")
+        if zone_id is None:
             return
         state = self._get_zone_priority_queue_state(zone_id, start_time)
         number_vehicles_in_zone = self.current_total_zone_vehicle_counts.get(zone_id, 0)
@@ -658,35 +687,36 @@ class NetworkBasic(NetworkBase):
         if queue_speed is not None and queue_speed > 0:
             state["v"] = queue_speed
         if travel_distance <= 0:
-            state["E"] += number_vehicles
-            state["G"] += number_vehicles
+            state["E"] += vehicle_weight
+            state["G"] += vehicle_weight
+            state["sample_E"] += 1
+            state["sample_G"] += 1
             self._set_pv_zone_vehicle_count_from_priority_queue(zone_id)
             self._log_zone_priority_queue_state(
                 zone_id,
                 "zero_distance",
                 start_time,
-                extra=f"n={number_vehicles} dist={travel_distance}"
+                extra=f"weight={vehicle_weight} dist={travel_distance}"
             )
             return
 
         projected_delta_t = max(start_time - state["last_time"], 0)
         projected_z = state["z"] + projected_delta_t * state["v"]
         theta = travel_distance + projected_z
-        if trip_ids is None:
-            trip_ids = [None] * number_vehicles
-        if len(trip_ids) != number_vehicles:
-            raise ValueError("trip_ids must contain one entry per registered vehicle")
-        for trip_id in trip_ids:
-            self._priority_queue_sequence += 1
-            heapq.heappush(state["heap"], (theta, self._priority_queue_sequence, trip_id))
-        state["E"] += number_vehicles
+        self._priority_queue_sequence += 1
+        heapq.heappush(
+            state["heap"],
+            (theta, self._priority_queue_sequence, trip_id, vehicle_weight),
+        )
+        state["E"] += vehicle_weight
+        state["sample_E"] += 1
         self._set_pv_zone_vehicle_count_from_priority_queue(zone_id)
         self._log_zone_priority_queue_state(
             zone_id,
             "push",
             start_time,
             extra=(
-                f"n={number_vehicles} dist={travel_distance} "
+                f"weight={vehicle_weight} dist={travel_distance} "
                 f"projected_dt={projected_delta_t} projected_z={projected_z} "
                 f"theta={theta}"
             )
@@ -711,14 +741,15 @@ class NetworkBasic(NetworkBase):
                 segments.append((zone_id, edge_distance))
         return segments
 
-    def _schedule_pv_route_trip(self, segments, start_time):
-        """Adds one PV route descriptor to the start-event priority queue."""
+    def _schedule_pv_route_trip(self, segments, start_time, vehicle_weight=1.0):
+        """Add one weighted PV route descriptor to the start-event queue."""
         self._priority_queue_sequence += 1
         trip_id = self._priority_queue_sequence
         self._queued_route_trips[trip_id] = {
             "vehicle_type": "pv",
             "segments": segments,
             "segment_index": 0,
+            "vehicle_weight": float(vehicle_weight),
         }
         heapq.heappush(self._pv_route_start_events, (start_time, self._priority_queue_sequence, trip_id))
 
@@ -730,7 +761,13 @@ class NetworkBasic(NetworkBase):
             if trip is None:
                 continue
             zone_id, distance = trip["segments"][trip["segment_index"]]
-            self._register_zone_trip(zone_id, simulation_time, distance, trip_ids=[trip_id])
+            self._register_zone_trip(
+                zone_id,
+                simulation_time,
+                distance,
+                vehicle_weight=trip["vehicle_weight"],
+                trip_id=trip_id,
+            )
 
     def _continue_pv_route_trip(self, trip_id, simulation_time):
         """Moves a completed PV segment into its next zone queue segment."""
@@ -742,7 +779,13 @@ class NetworkBasic(NetworkBase):
             self._queued_route_trips.pop(trip_id, None)
             return
         zone_id, distance = trip["segments"][trip["segment_index"]]
-        self._register_zone_trip(zone_id, simulation_time, distance, trip_ids=[trip_id])
+        self._register_zone_trip(
+            zone_id,
+            simulation_time,
+            distance,
+            vehicle_weight=trip["vehicle_weight"],
+            trip_id=trip_id,
+        )
 
     def _update_current_zone_vehicle_counts(self, simulation_time):
         """Updates PV queue counts and combines them with synced MoD positions.
@@ -754,7 +797,7 @@ class NetworkBasic(NetworkBase):
         tracked_zone_ids = set(self._get_defined_zones()) | set(self._zone_priority_queue_states.keys())
         for zone_id in tracked_zone_ids:
             self._advance_zone_priority_queue_state(zone_id, simulation_time)
-        self._refresh_total_zone_vehicle_counts()
+        self._refresh_total_zone_vehicle_counts(simulation_time)
         self._update_zone_priority_queue_speeds()
         LOG.debug(
             f"zone vehicle counts at {simulation_time}: pv={self.current_pv_zone_vehicle_counts} "
@@ -762,7 +805,7 @@ class NetworkBasic(NetworkBase):
         )
         return self.current_total_zone_vehicle_counts
 
-    def update_mod_zone_vehicle_counts(self, mod_positions):
+    def update_mod_zone_vehicle_counts(self, mod_positions, vehicle_weight=1.0):
         """Rebuilds moving-MoD zone counts from their current network positions.
 
         MoD vehicles are deliberately not represented in the priority queue.
@@ -770,17 +813,28 @@ class NetworkBasic(NetworkBase):
         dynamic network update.
 
         :param mod_positions: iterable of MoD network position tuples
-        :return: dictionary zone_id -> current moving-MoD vehicle count
+        :param vehicle_weight: equivalent MFD weight of each physical moving vehicle
+        :return: dictionary zone_id -> current equivalent moving-MoD count
         """
-        zone_counts = {zone_id: 0 for zone_id in self._get_defined_zones()}
+        try:
+            vehicle_weight = float(vehicle_weight)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("vehicle_weight must be a positive finite number") from exc
+        if not np.isfinite(vehicle_weight) or vehicle_weight <= 0:
+            raise ValueError("vehicle_weight must be a positive finite number")
+        physical_zone_counts = {zone_id: 0 for zone_id in self._get_defined_zones()}
         for position in mod_positions:
             if position is None:
                 continue
             zone_id = self._get_zone_from_position(position)
             if zone_id is None or zone_id < 0:
                 continue
-            zone_counts[zone_id] = zone_counts.get(zone_id, 0) + 1
-        self.current_mod_zone_vehicle_counts = zone_counts
+            physical_zone_counts[zone_id] = physical_zone_counts.get(zone_id, 0) + 1
+        self.current_physical_mod_zone_vehicle_counts = physical_zone_counts
+        self.current_mod_zone_vehicle_counts = {
+            zone_id: physical_count * vehicle_weight
+            for zone_id, physical_count in physical_zone_counts.items()
+        }
         self._refresh_total_zone_vehicle_counts()
         LOG.debug(
             f"synced moving MoD zone counts: mod={self.current_mod_zone_vehicle_counts} "
@@ -788,18 +842,34 @@ class NetworkBasic(NetworkBase):
         )
         return self.current_mod_zone_vehicle_counts
 
-    def _refresh_total_zone_vehicle_counts(self):
-        """Combines the current PV queue and MoD position counts per zone."""
+    def _update_exogenous_zone_vehicle_counts(self, simulation_time=None):
+        """Refresh fixed exogenous equivalent counts from zone density curves."""
+        if simulation_time is None:
+            simulation_time = self.sim_time
+        exogenous_getter = getattr(self.zones, "get_mfd_exogenous_vehicle_count", None)
+        self.current_exogenous_zone_vehicle_counts = {
+            zone_id: (
+                float(exogenous_getter(zone_id, simulation_time))
+                if callable(exogenous_getter) else 0.0
+            )
+            for zone_id in self._get_defined_zones()
+        }
+
+    def _refresh_total_zone_vehicle_counts(self, simulation_time=None):
+        """Combine weighted PV/MoD and fixed exogenous counts per zone."""
+        self._update_exogenous_zone_vehicle_counts(simulation_time)
         all_zone_ids = (
             set(self._get_defined_zones())
             | set(self.current_pv_zone_vehicle_counts.keys())
             | set(self.current_mod_zone_vehicle_counts.keys())
+            | set(self.current_exogenous_zone_vehicle_counts.keys())
             | set(self._zone_priority_queue_states.keys())
         )
         self.current_total_zone_vehicle_counts = {
             zone_id: (
                 self.current_pv_zone_vehicle_counts.get(zone_id, 0)
                 + self.current_mod_zone_vehicle_counts.get(zone_id, 0)
+                + self.current_exogenous_zone_vehicle_counts.get(zone_id, 0)
             )
             for zone_id in all_zone_ids
         }
@@ -978,9 +1048,15 @@ class NetworkBasic(NetworkBase):
         :param route: list of nodes
         :param start_time: simulation time at which the PV route starts
         :param end_time: retained for interface compatibility; ignored by the PQ model
-        :param number_vehicles: number of PV routes to schedule
+        :param number_vehicles: equivalent MFD weight of this one logical PV route
         """
-        if not route or len(route) < 2 or number_vehicles <= 0:
+        try:
+            vehicle_weight = float(number_vehicles)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("number_vehicles must be a positive finite weight") from exc
+        if not np.isfinite(vehicle_weight) or vehicle_weight <= 0:
+            raise ValueError("number_vehicles must be a positive finite weight")
+        if not route or len(route) < 2:
             LOG.debug(f"pv route assignment skipped route={route} reason=too_short")
             return
         segments = self._build_route_zone_segments(route)
@@ -989,11 +1065,10 @@ class NetworkBasic(NetworkBase):
             return
         total_route_distance = sum(distance for _, distance in segments)
         LOG.debug(
-            f"pv route assignment route={route} start={start_time} n={number_vehicles} "
+            f"pv route assignment route={route} start={start_time} weight={vehicle_weight} "
             f"segments={segments} total_dist={total_route_distance}; end_time={end_time} ignored"
         )
-        for _ in range(number_vehicles):
-            self._schedule_pv_route_trip(list(segments), start_time)
+        self._schedule_pv_route_trip(list(segments), start_time, vehicle_weight)
 
     def get_section_overhead(self, position, from_start=True, customized_section_cost_function=None):
         """This method computes the section overhead for a certain position.

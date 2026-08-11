@@ -33,6 +33,10 @@ class NetworkZoneSystem(ZoneSystem):
         self.current_park_costs = {}
         self.current_park_search_durations = {}
         self.mfd_parameters = self._load_mfd_parameters()
+        self.mfd_exogenous_density_file = None
+        self.mfd_exogenous_density_profiles = self._load_mfd_exogenous_density_profiles(
+            scenario_parameters
+        )
         # Filled by the routing engine once it has assigned network edges to
         # zones. The fitted MFDs use density [veh/km], whereas FleetPy tracks
         # an absolute vehicle count per zone.
@@ -125,6 +129,138 @@ class NetworkZoneSystem(ZoneSystem):
             for zone_id, mfd_type, v, gamma_value in zip(zone_ids, mfd_types, v_kmh, gamma)
         }
 
+    def _load_mfd_exogenous_density_profiles(self, scenario_parameters):
+        """Load optional time-varying exogenous MFD densities.
+
+        The configured file is resolved relative to the network-specific zone
+        directory. It contains final densities in veh/km; the reference and
+        scale columns are retained and validated for calibration auditability.
+        """
+        exogenous_name = scenario_parameters.get(G_MFD_EXOGENOUS_DENSITY_F)
+        if exogenous_name is None or pd.isna(exogenous_name) or not str(exogenous_name).strip():
+            return {}
+
+        exogenous_name = str(exogenous_name).strip()
+        exogenous_f = exogenous_name if os.path.isabs(exogenous_name) else os.path.join(
+            self.zone_network_dir, exogenous_name
+        )
+        if not os.path.isfile(exogenous_f):
+            raise FileNotFoundError(f"MFD exogenous density file does not exist: {exogenous_f}")
+
+        try:
+            exogenous_df = pd.read_csv(exogenous_f)
+        except Exception as exc:
+            raise ValueError(
+                f"Could not read MFD exogenous density file {exogenous_f}: {exc}"
+            ) from exc
+
+        required_columns = {
+            "simulation_time",
+            "zone_id",
+            "normalized_profile",
+            "reference_density_veh_per_km",
+            "zone_scale",
+            "exogenous_density_veh_per_km",
+        }
+        missing_columns = required_columns - set(exogenous_df.columns)
+        if missing_columns:
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} is missing required "
+                f"columns: {sorted(missing_columns)}"
+            )
+        if exogenous_df.empty:
+            raise ValueError(f"MFD exogenous density file {exogenous_f} is empty")
+
+        numeric_columns = sorted(required_columns)
+        try:
+            numeric_df = exogenous_df[numeric_columns].apply(pd.to_numeric, errors="raise")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} contains non-numeric values"
+            ) from exc
+        if not np.isfinite(numeric_df.to_numpy(dtype=float)).all():
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} contains non-finite values"
+            )
+
+        zone_ids = numeric_df["zone_id"]
+        if not np.equal(zone_ids, np.floor(zone_ids)).all():
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} contains non-integer zone IDs"
+            )
+        numeric_df["zone_id"] = zone_ids.astype(int)
+        if numeric_df.duplicated(["zone_id", "simulation_time"]).any():
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} contains duplicate zone/time rows"
+            )
+
+        configured_zones = set(numeric_df["zone_id"].unique())
+        mfd_zones = set(self.mfd_parameters)
+        unknown_zones = sorted(configured_zones - mfd_zones)
+        if unknown_zones:
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} references zones without an MFD: "
+                f"{unknown_zones}"
+            )
+        missing_zones = sorted(mfd_zones - configured_zones)
+        if missing_zones:
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} is missing MFD zones: {missing_zones}"
+            )
+
+        if (numeric_df["simulation_time"] < 0).any():
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} contains negative simulation times"
+            )
+        for column in ("reference_density_veh_per_km", "exogenous_density_veh_per_km"):
+            if (numeric_df[column] < 0).any():
+                raise ValueError(
+                    f"MFD exogenous density file {exogenous_f} contains negative {column} values"
+                )
+        if (numeric_df["zone_scale"] <= 0).any():
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} requires positive zone_scale values"
+            )
+        profile = numeric_df["normalized_profile"]
+        if (profile < 0).any() or (profile > 1 + 1e-9).any():
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} requires normalized_profile in [0, 1]"
+            )
+        expected_exogenous = (
+            numeric_df["reference_density_veh_per_km"] * numeric_df["zone_scale"]
+        )
+        if not np.allclose(
+            numeric_df["exogenous_density_veh_per_km"],
+            expected_exogenous,
+            rtol=1e-6,
+            atol=1e-9,
+        ):
+            raise ValueError(
+                f"MFD exogenous density file {exogenous_f} has inconsistent reference, "
+                "zone_scale, and exogenous density values"
+            )
+
+        simulation_start = float(scenario_parameters.get(G_SIM_START_TIME, 0))
+        simulation_end = float(scenario_parameters.get(G_SIM_END_TIME, simulation_start))
+        profiles = {}
+        for zone_id, zone_df in numeric_df.groupby("zone_id"):
+            zone_df = zone_df.sort_values("simulation_time")
+            times = zone_df["simulation_time"].to_numpy(dtype=float)
+            if times[0] > simulation_start or times[-1] < simulation_end:
+                raise ValueError(
+                    f"MFD exogenous density file {exogenous_f} does not cover "
+                    f"[{simulation_start}, {simulation_end}] for zone {zone_id}"
+                )
+            profiles[int(zone_id)] = {
+                "simulation_time": times,
+                "exogenous_density_veh_per_km": zone_df[
+                    "exogenous_density_veh_per_km"
+                ].to_numpy(dtype=float),
+            }
+
+        self.mfd_exogenous_density_file = exogenous_f
+        return profiles
+
     def set_mfd_network_lengths(self, network_lengths_km):
         """Set zone road lengths used to convert vehicle counts to density.
 
@@ -146,6 +282,24 @@ class NetworkZoneSystem(ZoneSystem):
         if network_length_km is None:
             return None
         return max(float(number_vehicles), 0.0) / network_length_km
+
+    def get_mfd_exogenous_density(self, zone_id, simulation_time):
+        """Return the linearly interpolated fixed exogenous density in veh/km."""
+        profile = self.mfd_exogenous_density_profiles.get(zone_id)
+        if profile is None:
+            return 0.0
+        return float(np.interp(
+            float(simulation_time),
+            profile["simulation_time"],
+            profile["exogenous_density_veh_per_km"],
+        ))
+
+    def get_mfd_exogenous_vehicle_count(self, zone_id, simulation_time):
+        """Convert a zone's exogenous density to an equivalent vehicle count."""
+        network_length_km = self.mfd_network_lengths_km.get(zone_id)
+        if network_length_km is None:
+            return 0.0
+        return self.get_mfd_exogenous_density(zone_id, simulation_time) * network_length_km
 
     def get_mfd_average_speed(self, zone_id, number_vehicles):
         """Return the configured MFD average speed in m/s.

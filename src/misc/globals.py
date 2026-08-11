@@ -83,6 +83,7 @@ G_RP_CHARGE_TYPE = "rp_charge_type"
 G_RP_TARIFF_BASIS = "rp_tariff_basis"
 G_RP_TARIFF_SCHEDULE_F = "rp_tariff_schedule_file"
 G_RP_TARIFF_UPDATE_INT = "rp_tariff_update_interval"
+G_MFD_EXOGENOUS_DENSITY_F = "mfd_exogenous_density_file"
 
 # broker specific attributes
 G_BROKER_TYPE = "broker_type"
@@ -126,6 +127,7 @@ G_PT_ZC_RID_RIDE_TIME = 2
 
 # traveler general attributes
 G_RQ_FILE = "rq_file"
+G_RQ_WEIGHT = "wrq"
 G_RQ_TYP1 = "rq_type"
 G_RQ_TYP2 = "rq_type_distribution"
 G_RQ_TYP3 = "rq_type_od_distribution"
@@ -476,6 +478,7 @@ G_RQ_ORIGIN = "start"
 G_RQ_DESTINATION = "end"
 G_RQ_TIME = "rq_time"
 G_RQ_ID = "request_id"
+G_RQ_WEIGHT_OUTPUT = "rq_weight"
 
 # optional input data (and output)
 # --------------------------------

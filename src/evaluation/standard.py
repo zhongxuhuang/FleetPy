@@ -51,11 +51,39 @@ def read_user_output_file(output_dir, evaluation_start_time = None, evaluation_e
     :return: output dataframe of specific operator
     """
     user_stats = pd.read_csv(os.path.join(output_dir, "1_user-stats.csv"))
+    if G_RQ_WEIGHT_OUTPUT not in user_stats.columns:
+        user_stats[G_RQ_WEIGHT_OUTPUT] = 1.0
+    else:
+        user_stats[G_RQ_WEIGHT_OUTPUT] = pd.to_numeric(
+            user_stats[G_RQ_WEIGHT_OUTPUT], errors="raise"
+        )
+        if (
+            not np.isfinite(user_stats[G_RQ_WEIGHT_OUTPUT]).all()
+            or (user_stats[G_RQ_WEIGHT_OUTPUT] <= 0).any()
+        ):
+            raise ValueError(f"{G_RQ_WEIGHT_OUTPUT} must contain positive finite values")
     if evaluation_start_time is not None:
         user_stats = user_stats[user_stats[G_RQ_TIME] >= evaluation_start_time]
     if evaluation_end_time is not None:
         user_stats = user_stats[user_stats[G_RQ_TIME] < evaluation_end_time]
     return user_stats
+
+
+def weighted_sum(frame, column):
+    """Return a request-representative sum, defaulting historical rows to weight one."""
+    values = pd.to_numeric(frame[column], errors="coerce")
+    weights = pd.to_numeric(frame[G_RQ_WEIGHT_OUTPUT], errors="raise")
+    return (values * weights).sum()
+
+
+def weighted_mean(frame, column):
+    """Return a request-representative mean."""
+    values = pd.to_numeric(frame[column], errors="coerce")
+    valid = values.notna()
+    if not valid.any():
+        return np.nan
+    weights = pd.to_numeric(frame.loc[valid, G_RQ_WEIGHT_OUTPUT], errors="raise")
+    return np.average(values[valid], weights=weights)
 
 def decode_offer_str(offer_str):
     """ create a dictionary from offer_str in outputfile """
@@ -217,17 +245,20 @@ def standard_evaluation(output_dir, evaluation_start_time = None, evaluation_end
             for offer_param in op_offer.keys():
                 active_offer_parameters[offer_param] = 1
     
-    number_users = user_stats.shape[0]
-    number_total_travelers = user_stats[G_RQ_PAX].sum()
+    number_users = user_stats[G_RQ_WEIGHT_OUTPUT].sum()
+    number_total_travelers = weighted_sum(user_stats, G_RQ_PAX)
 
     for op_id, op_users in user_stats.groupby(G_RQ_OP_ID):
         op_name = "?"
         
         op_reservation_horizon = list_operator_attributes[int(op_id)].get(G_RA_OPT_HOR,0)
 
-        op_number_users = op_users.shape[0]
-        op_number_pax = op_users[G_RQ_PAX].sum()
-        op_created_offers = len(op_id_to_offer_dict.get(op_id, {}).keys())
+        op_number_users = op_users[G_RQ_WEIGHT_OUTPUT].sum()
+        op_number_pax = weighted_sum(op_users, G_RQ_PAX)
+        offered_rids = set(op_id_to_offer_dict.get(op_id, {}).keys())
+        op_created_offers = user_stats.loc[
+            user_stats[G_RQ_ID].isin(offered_rids), G_RQ_WEIGHT_OUTPUT
+        ].sum()
         op_modal_split_rq = float(op_number_users)/number_users
         op_modal_split = float(op_number_pax)/number_total_travelers
         if print_comments:
@@ -235,23 +266,25 @@ def standard_evaluation(output_dir, evaluation_start_time = None, evaluation_end
         op_rel_created_offers = float(op_created_offers)/number_users*100.0
         op_avg_utility = np.nan
         if G_RQ_C_UTIL in op_users.columns:
-            op_avg_utility = op_users[G_RQ_C_UTIL].sum()/op_number_users  
+            op_avg_utility = weighted_mean(op_users, G_RQ_C_UTIL)
             
         op_reservation_users = op_users[op_users[G_RQ_EPT] - op_users[G_RQ_TIME] > op_reservation_horizon]
         total_reservation_users = user_stats[user_stats[G_RQ_EPT] - user_stats[G_RQ_TIME] > op_reservation_horizon]
-        op_number_reservation_users = op_reservation_users.shape[0]
-        op_number_reservation_pax = op_reservation_users[G_RQ_PAX].sum()
+        op_number_reservation_users = op_reservation_users[G_RQ_WEIGHT_OUTPUT].sum()
+        op_number_reservation_pax = weighted_sum(op_reservation_users, G_RQ_PAX)
+        total_number_reservation_users = total_reservation_users[G_RQ_WEIGHT_OUTPUT].sum()
+        total_number_reservation_pax = weighted_sum(total_reservation_users, G_RQ_PAX)
         try:
-            op_frac_served_reservation_users = op_number_reservation_users/total_reservation_users.shape[0]*100.0
-            op_frac_served_reservation_pax = op_number_reservation_pax/total_reservation_users[G_RQ_PAX].sum()*100.0
+            op_frac_served_reservation_users = op_number_reservation_users/total_number_reservation_users*100.0
+            op_frac_served_reservation_pax = op_number_reservation_pax/total_number_reservation_pax*100.0
         except ZeroDivisionError:
             op_frac_served_reservation_users = 100.0
             op_frac_served_reservation_pax = 100.0
         op_number_online_users = op_number_users - op_number_reservation_users
         op_number_online_pax = op_number_pax - op_number_reservation_pax
         try:
-            op_frac_served_online_users = op_number_online_users/(number_users - total_reservation_users.shape[0])*100.0
-            op_frac_served_online_pax = op_number_online_pax/(number_total_travelers - total_reservation_users[G_RQ_PAX].sum())*100.0
+            op_frac_served_online_users = op_number_online_users/(number_users - total_number_reservation_users)*100.0
+            op_frac_served_online_pax = op_number_online_pax/(number_total_travelers - total_number_reservation_pax)*100.0
         except ZeroDivisionError:
             op_frac_served_online_users = 100.0
             op_frac_served_online_pax = 100.0
@@ -329,36 +362,40 @@ def standard_evaluation(output_dir, evaluation_start_time = None, evaluation_end
             
             # sum travel time
             if G_RQ_DO in op_users.columns and G_RQ_PU in op_users.columns:
-                op_user_sum_travel_time = op_users[G_RQ_DO].sum() - op_users[G_RQ_PU].sum()
+                op_user_sum_travel_time = weighted_sum(op_users, G_RQ_DO) - weighted_sum(op_users, G_RQ_PU)
             # avg travel time
             if not np.isnan(op_user_sum_travel_time):
                 op_avg_travel_time = op_user_sum_travel_time / op_number_users
             # sum fare
             if G_RQ_FARE in op_users.columns:
-                op_revenue = op_users[G_RQ_FARE].sum()
+                op_revenue = weighted_sum(op_users, G_RQ_FARE)
                 if G_RQ_TOLL in op_users.columns:
-                    op_revenue_net_toll = op_revenue - op_users[G_RQ_TOLL].sum()
+                    op_revenue_net_toll = op_revenue - weighted_sum(op_users, G_RQ_TOLL)
             # avg waiting time
             if G_RQ_PU in op_users.columns and G_RQ_TIME in op_users.columns:
                 op_users["wait time"] = op_users[G_RQ_PU] - op_users[G_RQ_TIME]
-                op_avg_wait_time = op_users["wait time"].mean()
+                op_avg_wait_time = weighted_mean(op_users, "wait time")
                 op_med_wait_time = op_users["wait time"].median()
                 op_90perquant_wait_time = op_users["wait time"].quantile(q=0.9)
             # avg waiting time from earliest pickup time
             if G_RQ_PU in op_users.columns and G_RQ_EPT in op_users.columns:
-                op_avg_wait_from_ept = (op_users[G_RQ_PU].sum() - op_users[G_RQ_EPT].sum()) / op_number_users
+                op_avg_wait_from_ept = (
+                    weighted_sum(op_users, G_RQ_PU) - weighted_sum(op_users, G_RQ_EPT)
+                ) / op_number_users
             # avg abs detour time
             if not np.isnan(op_user_sum_travel_time) and G_RQ_DRT in op_users.columns:
-                op_avg_detour_time = (op_user_sum_travel_time - op_users[G_RQ_DRT].sum())/op_number_users - \
+                op_avg_detour_time = (op_user_sum_travel_time - weighted_sum(op_users, G_RQ_DRT))/op_number_users - \
                                      boarding_time
             # avg rel detour time
             if not np.isnan(op_user_sum_travel_time) and G_RQ_DRT in op_users.columns:
                 rel_det_series = (op_users[G_RQ_DO] - op_users[G_RQ_PU] - boarding_time -
                                   op_users[G_RQ_DRT])/op_users[G_RQ_DRT]
-                op_avg_rel_detour = rel_det_series.sum()/op_number_users * 100.0
+                op_avg_rel_detour = (
+                    rel_det_series * op_users[G_RQ_WEIGHT_OUTPUT]
+                ).sum()/op_number_users * 100.0
             # direct travel time and distance
             if G_RQ_DRD in op_users.columns:
-                op_sum_direct_travel_distance = op_users[G_RQ_DRD].sum() / 1000.0
+                op_sum_direct_travel_distance = weighted_sum(op_users, G_RQ_DRD) / 1000.0
 
             # multiple boarding points
             result_dict.update(multiple_boarding_points(op_users, operator_attributes, scenario_parameters, dir_names, op_var_costs))
@@ -480,10 +517,14 @@ def standard_evaluation(output_dir, evaluation_start_time = None, evaluation_end
             # - costs, emissions, utilization (publictransport evaluation)
             op_name = "PT"
             if active_offer_parameters.get(G_OFFER_DRIVE):
-                op_avg_travel_time = sum([op_id_to_offer_dict[op_id][rq_id][G_OFFER_DRIVE]
-                                    for rq_id in op_users[G_RQ_ID]])/op_number_users
+                op_avg_travel_time = sum(
+                    op_id_to_offer_dict[op_id][rq_id][G_OFFER_DRIVE] * weight
+                    for rq_id, weight in zip(
+                        op_users[G_RQ_ID], op_users[G_RQ_WEIGHT_OUTPUT]
+                    )
+                ) / op_number_users
             if G_RQ_FARE in op_users.columns:
-                op_revenue = op_users[G_RQ_FARE].sum()
+                op_revenue = weighted_sum(op_users, G_RQ_FARE)
 
         elif op_id == G_MC_DEC_PV:
             # 3) private vehicle:
@@ -491,15 +532,23 @@ def standard_evaluation(output_dir, evaluation_start_time = None, evaluation_end
             # - costs, emissions
             op_name = "PV"
             if active_offer_parameters.get(G_OFFER_DRIVE):
-                op_avg_travel_time = sum([op_id_to_offer_dict[op_id][rq_id][G_OFFER_DRIVE]
-                                    for rq_id in op_users[G_RQ_ID]])/op_number_users
+                op_avg_travel_time = sum(
+                    op_id_to_offer_dict[op_id][rq_id][G_OFFER_DRIVE] * weight
+                    for rq_id, weight in zip(
+                        op_users[G_RQ_ID], op_users[G_RQ_WEIGHT_OUTPUT]
+                    )
+                ) / op_number_users
             if active_offer_parameters.get(G_OFFER_DIST):
-                op_avg_travel_distance = sum([op_id_to_offer_dict[op_id][rq_id][G_OFFER_DRIVE]
-                                    for rq_id in op_users[G_RQ_ID]])/op_number_users   
+                op_avg_travel_distance = sum(
+                    op_id_to_offer_dict[op_id][rq_id][G_OFFER_DRIVE] * weight
+                    for rq_id, weight in zip(
+                        op_users[G_RQ_ID], op_users[G_RQ_WEIGHT_OUTPUT]
+                    )
+                ) / op_number_users
             if G_RQ_TOLL in op_users.columns:
-                op_toll = op_users[G_RQ_TOLL].sum()/op_number_users
+                op_toll = weighted_sum(op_users, G_RQ_TOLL)/op_number_users
             if G_RQ_PARK in op_users.columns:
-                op_parking_cost = op_users[G_RQ_PARK].sum()/op_number_users
+                op_parking_cost = weighted_sum(op_users, G_RQ_PARK)/op_number_users
 
         else:
             # 4) intermodal AMoD: AMoD fare already treated by sub-request -> only evaluate PT fare and subsidies (user_stats)
@@ -509,10 +558,10 @@ def standard_evaluation(output_dir, evaluation_start_time = None, evaluation_end
 
             im_pt_revenue = np.nan
             if G_RQ_IM_PT_FARE in op_users.columns:
-                im_pt_revenue = op_users[G_RQ_IM_PT_FARE].sum()
+                im_pt_revenue = weighted_sum(op_users, G_RQ_IM_PT_FARE)
             im_subsidy = np.nan
             if G_RQ_IM_PT_FARE in op_users.columns:
-                im_subsidy = op_users[G_RQ_SUB].sum()
+                im_subsidy = weighted_sum(op_users, G_RQ_SUB)
 
             result_dict["pt revenue"] = im_pt_revenue
             result_dict["total intermodal MoD subsidy"] = im_subsidy

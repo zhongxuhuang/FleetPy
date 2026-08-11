@@ -40,7 +40,7 @@ INPUT_PARAMETERS_RequestBase = {
     "inherit" : None,
     "input_parameters_mandatory": [],
     "input_parameters_optional": [
-        G_AR_MIN_WT
+        G_AR_MIN_WT, G_RQ_WEIGHT
     ],
     "mandatory_modules": [], 
     "optional_modules": []
@@ -53,6 +53,12 @@ class RequestBase(metaclass=ABCMeta):
     def __init__(self, rq_row, routing_engine, simulation_time_step, scenario_parameters):
         # input
         self.routing_engine = routing_engine
+        try:
+            self.rq_weight = float(scenario_parameters.get(G_RQ_WEIGHT, 1.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{G_RQ_WEIGHT} must be a positive finite number") from exc
+        if not np.isfinite(self.rq_weight) or self.rq_weight <= 0:
+            raise ValueError(f"{G_RQ_WEIGHT} must be a positive finite number")
         self.rid = int(rq_row.get(G_RQ_ID, rq_row.name))  # request id is index of dataframe
         self.sub_rid_struct = None
         self.is_parcel = False  # requests are usually persons
@@ -132,6 +138,7 @@ class RequestBase(metaclass=ABCMeta):
         else:
             rid_str = f"{self.rid}"
         record_dict[G_RQ_ID] = rid_str
+        record_dict[G_RQ_WEIGHT_OUTPUT] = self.rq_weight
         record_dict[G_RQ_TYPE] = self.type
         record_dict[G_RQ_PAX] = self.nr_pax
         record_dict[G_RQ_TIME] = self.rq_time

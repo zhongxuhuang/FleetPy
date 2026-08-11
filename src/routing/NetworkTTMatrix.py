@@ -336,8 +336,8 @@ class NetworkTTMatrix(NetworkBase):
         :param end_time: optional parameter; can be used to assign a vehicle to the cluster of the first node of the
                     route for a certain time
         :type end_time: float
-        :param number_vehicles: optional parameter; can be used to assign multiple vehicles at once
-        :type number_vehicles: int
+        :param number_vehicles: optional equivalent-vehicle weight of the logical route
+        :type number_vehicles: float
         """
         pass
 

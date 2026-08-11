@@ -4,6 +4,15 @@ This document records source-level changes, equations, and implementation notes
 for files that require quick future reference. Add a new top-level entry for each
 additional source file.
 
+## `src/misc/globals.py`
+
+### Representative request weight and MFD exogenous profile keys
+
+- Updated 2026-08-07 +02:00 (Europe/Berlin). Added the scenario keys `wrq`
+  and `mfd_exogenous_density_file`, plus the user-stat output field
+  `rq_weight`. The implementation using these interfaces is documented in the
+  related source entries below.
+
 ## `data/demand/Munich_PV_2020/matched/Aimsun_Munich_2020/rq_munich_matsim_5x.csv`
 
 ### Fivefold MATSim request-demand expansion
@@ -286,6 +295,18 @@ additional source file.
   welfare analysis. Validated 2026-07-30 +02:00 (Europe/Berlin) against the
   three named result directories; the common figure writer reserves space for
   and preserves the shared scenario legend in the output bounds.
+- Updated 2026-08-09 +02:00 (Europe/Berlin). The comparison CLI now accepts
+  two or more repeatable `--scenario LABEL=RESULT_DIRECTORY` inputs. The first
+  scenario is the reference for fixed request-distance cohorts and MFD
+  parameters; scenario colors, grouped-bar positions, legend columns, request
+  annotations, metadata, and reference-dependent calculations are generated
+  from the supplied input order rather than fixed 60x policy names.
+- When `--output-dir` is omitted, output is written to `compare/` inside the
+  first scenario directory. Validated with `Base` and `SP` inputs for
+  `mt_06_10_rq_raw_matsim_5x_wrq2_exogenous_base` and
+  `mt_06_10_rq_raw_matsim_5x_wrq2_exogenous_sp`: both 447,385-request
+  scenarios generated 40 PNG figures and 42 CSV tables/files under the base
+  result's `compare/`, with Zone 5 excluded by default.
 
 ## `studies/mt/plot_all_metrics.py`
 
@@ -453,6 +474,77 @@ additional source file.
   log-sum-exp calculation. Equity plots are limited to OD zone, distance, and
   pricing-zone exposure; missing income and trip-purpose fields are reported as
   unavailable rather than inferred.
+- Updated 2026-08-07 +02:00 (Europe/Berlin). `analysis_common.enrich_users`
+  validates `rq_weight` and defaults historical outputs to one. Demand/mode
+  counts and shares, OD volumes, and MoD request-funnel counts use that weight.
+  User-welfare output adds representative generalized-cost and inclusive-value
+  totals; fare, toll, parking, PT-payment, and inclusive-value histogram counts
+  are weighted. Vehicle occupancy, VKT, utilization, fleet size, and other
+  physical MoD-operation metrics remain unweighted.
+
+## `studies/mt/build_mfd_exogenous_profile.py`
+
+### Fixed Munich MFD exogenous profile generation
+
+- Added 2026-08-07 +02:00 (Europe/Berlin). The protected-output CLI reads the
+  no-MoD 10% baseline `zone_speed_timeseries.csv`, uses only
+  `pv_vehicle_count`, validates a complete 30-second grid, applies a centered
+  60-sample (30-minute) rolling mean, and converts counts to density with the
+  directed source-zone road lengths.
+- Each zone is normalized by its smoothed daily peak and sampled at five-minute
+  knots from 0 through 86400 seconds. Default reference multipliers are
+  `{0: 20.0, 1: 20.0, 2: 33.2, 3: 20.0, 4: 20.0}`; Zone 5 is omitted because
+  it has no MFD. `--zone-scale ZONE=SCALE` supports later per-zone calibration,
+  and an existing output is replaced only with `--overwrite`.
+
+## `data/zones/Munich_reservoirs/Aimsun_Munich_2020/mfd_exogenous_density_5x_wrq2.csv`
+
+### Calibrated five-minute exogenous density curves
+
+- Added 2026-08-07 +02:00 (Europe/Berlin). Generated 1,445 protected-output
+  rows (289 timestamps for each MFD Zone 0--4) from the 10% no-MoD baseline.
+  Exogenous-only peak density reaches 47.56%, 69.65%, 78.66%, 30.24%, and
+  22.59% of critical density in Zones 0--4 respectively. Zone 5 is absent.
+  The initially generated `background`-named draft was removed when the
+  terminology was standardized to `exogenous`.
+
+## `studies/mt/scenarios/scenario_cfg_mt_5x_wrq2_exogenous.csv`
+
+### Isolated 5x weighted-exogenous baseline
+
+- Added 2026-08-07 +02:00 (Europe/Berlin). The scenario keeps
+  `rq_munich_matsim_5x.csv`, sets `wrq=2.0`, loads
+  `mfd_exogenous_density_5x_wrq2.csv`, keeps `rq_pv_as_background=False`, and
+  writes results to `mt_rq_raw_matsim_5x_wrq2_exogenous_base`. Existing scenario
+  configuration files remain unchanged.
+
+## `tests/test_networkbasic_zone_counts.py`, `tests/test_network_zoning_mfd_exogenous.py`, `tests/test_fleet_simulation_traffic_scaling.py`, `tests/test_mt_request_weighting.py`, and `tests/test_build_mfd_exogenous_profile.py`
+
+### Weighted traffic and exogenous-density regression coverage
+
+- Updated 2026-08-07 +02:00 (Europe/Berlin). Replaced stale temporary-60x and
+  exogenous-density expectations with `wrq` route registration, one logical PV
+  descriptor, physical-versus-weighted MoD counts, exogenous interpolation,
+  total-count exports, input validation, and representative evaluation sums.
+  The legacy `test_network_zoning_mfd_exogenous.py` was removed because that
+  deleted static interface is no longer part of the implementation. Exogenous-only
+  zones are asserted to expose that exogenous count in the final `vehicle_count`.
+  Profile generation is checked for five-minute knots, audit-column
+  consistency, and rejection of an incomplete 30-second source grid. Road
+  pricing regression stubs now consume the routing layer's already-combined
+  total count instead of recreating the removed exogenous-density interface.
+- Validated 2026-08-08 +02:00 (Europe/Berlin): 26 focused `unittest` cases
+  pass. A production-class component smoke using the actual Munich zone data
+  and generated exogenous curve confirmed `wrq=2`, one sampled PV contributing
+  two weighted PV, one physical moving MoD contributing two weighted MoD,
+  and `vehicle_count = weighted PV + weighted MoD + exogenous count`. At
+  `t=300` in Zone 1 the checked values were `2 + 2 + 35 = 39` vehicles.
+- A complete time-step smoke could not be used in the default Python
+  installation: the C++ routing extension is not compiled, while the pure
+  Python backend's first whole-network dynamic update is too slow for a short
+  check. Its two temporary partial result directories were removed after their
+  absolute paths were verified inside `studies/mt/results`; no baseline result
+  directory was changed.
 
 ## `src/infra/RoadPricing.py`, `src/routing/NetworkBasic.py`, and `studies/mt/scenarios/const_cfg_mt.yaml`
 
@@ -618,7 +710,7 @@ additional source file.
 | Compared against | Current working tree, including uncommitted changes |
 | Baseline-to-current diff | 675 insertions, 51 deletions |
 | Created | 2026-07-14 21:17:14 +02:00 (Europe/Berlin) |
-| Last updated | 2026-08-02 +02:00 (Europe/Berlin) |
+| Last updated | 2026-08-07 +02:00 (Europe/Berlin) |
 
 Line numbers below refer to the source snapshot recorded above. Function names
 are the stable references when later edits shift line numbers.
@@ -691,6 +783,16 @@ are the stable references when later edits shift line numbers.
   counts. `_update_current_zone_vehicle_counts` (`:691`) admits due PV trips,
   advances queues, refreshes totals, and then refreshes queue speeds before TT
   updates use the totals.
+- Updated 2026-08-07 +02:00 (Europe/Berlin). Each PV route now remains one
+  logical queue descriptor carrying a positive equivalent-vehicle weight.
+  Queue `E/G` values accumulate that weight, while separate sampled `E/G`
+  counters retain the number of logical PV trips. Moving MoD vehicles retain
+  a separate physical count and contribute their configured request weight
+  only to the MFD count.
+- The total count is now
+  `N_total = N_PV,weighted + N_MoD,weighted + k_exogenous(t) * L_zone`.
+  The zone-edge cache is initialized before the first count refresh so the
+  exogenous density conversion has the required road lengths.
 
 #### Zone-speed result time series
 
@@ -701,6 +803,9 @@ are the stable references when later edits shift line numbers.
   `zone_speed_timeseries.csv`. It contains `simulation_time`, `zone_id`,
   `vehicle_count`, `avg_speed_mps`, and the converted `avg_speed_kmh`. Zones
   without a configured MFD speed retain blank speed values.
+- Updated 2026-08-07 +02:00 (Europe/Berlin). The export distinguishes sampled
+  PV, weighted PV, physical moving MoD, weighted moving MoD, and fixed
+  exogenous counts; `vehicle_count` remains the final count passed to the MFD.
 
 #### Supporting routing and position changes
 
@@ -726,7 +831,7 @@ are the stable references when later edits shift line numbers.
 | Active PV count | `_get_zone_priority_queue_active_count` (`:569-571`) | `N_PV,z = max(E_z - G_z, 0)` | Counts PV route segments currently active in a zone queue. |
 | Queue-entry projection | `_register_zone_trip` (`:584-635`) | `Δt_projected = max(t_start - t_last, 0)`; `z_projected = z + Δt_projected * v` | Computes queue progress at a PV segment's entry time before it is inserted. |
 | PV completion threshold | `_register_zone_trip` (`:584-635`) | `θ = distance_remaining + z_projected`; complete when `θ <= z` | Stores each PV segment's required cumulative progress in a min-heap and determines when it leaves the zone. |
-| Total zone vehicles | `_refresh_total_zone_vehicle_counts` (`:735-749`) | `N_z = N_PV,z + N_MoD,z` | Gives the MFD and dynamic-TT update the total current number of vehicles in each zone. |
+| Total zone vehicles | `_refresh_total_zone_vehicle_counts` | `N_z = N_PV,weighted,z + N_MoD,weighted,z + k_exogenous,z(t) * L_z` | Gives the MFD and dynamic-TT update the total equivalent number of vehicles in each zone. |
 | MFD vehicle-count conversion | `_get_zone_to_edge_cache` (`:354-379`); `NetworkZoneSystem.get_mfd_average_speed` | `k_z = N_z / L_z` | Converts the current simulated vehicle count to the fitted MFD density in veh/km. |
 | Edge-position interpolation | `return_position_coordinates` (`:850-863`) | `coord = rel_pos * coord_destination + (1 - rel_pos) * coord_origin` | Converts an in-edge network position into metric coordinates. |
 | Partial-edge movement | `move_along_route` (`:1392-1464`) | `t_next = t_last + (1 - rel_pos) * tt_edge`; `rel_end = (t_end - t_last) / tt_edge + rel_pos` | Advances a vehicle along a partially traversed edge within one simulation time step. |
@@ -755,7 +860,7 @@ source files rather than mixing their details into this entry.
 | Field | Value |
 | --- | --- |
 | Source file | `src/infra/NetworkZoning.py` |
-| Last updated | 2026-07-28 +02:00 (Europe/Berlin) |
+| Last updated | 2026-08-07 +02:00 (Europe/Berlin) |
 
 ### Data-driven MFD configuration
 
@@ -770,6 +875,18 @@ evaluate `k_z = N_z / L_z` and
 `v_z = max((v_kmh - gamma * k_z) / 3.6, 0.1)`. A zone without an MFD has no
 MFD speed and retains its existing edge travel times.
 
+### Time-varying fixed exogenous density
+
+- Updated 2026-08-07 +02:00 (Europe/Berlin). The optional
+  `mfd_exogenous_density_file` is resolved in the network-specific zone
+  directory. It must cover every MFD zone and the complete simulation horizon,
+  contain unique non-negative zone/time rows, and may not reference the
+  non-MFD outside zone. The loader validates that
+  `exogenous_density_veh_per_km = reference_density_veh_per_km * zone_scale`.
+- `get_mfd_exogenous_density` linearly interpolates the fixed curve in time;
+  `get_mfd_exogenous_vehicle_count` multiplies it by the routing-supplied
+  directed road length. Omitting the file leaves exogenous density at zero.
+
 ## `src/demand/TravelerModels.py`
 
 ### Snapshot metadata
@@ -781,7 +898,7 @@ MFD speed and retains its existing edge travel times.
 | Compared against | Current working tree, including uncommitted changes |
 | Baseline-to-current diff | 169 insertions, 34 deletions |
 | Created | 2026-07-14 21:52:16 +02:00 (Europe/Berlin) |
-| Last updated | 2026-07-17 +02:00 (Europe/Berlin) |
+| Last updated | 2026-08-07 +02:00 (Europe/Berlin) |
 
 Line numbers below refer to the source snapshot recorded above. Function names
 are the stable references when later edits shift line numbers.
@@ -793,6 +910,9 @@ are the stable references when later edits shift line numbers.
 - `RequestBase.__init__` (`src/demand/TravelerModels.py:53`) retains the
   routing engine and initializes a request toll to zero.
 - `RequestBase.record_data` (`:125`) writes `included_toll` alongside the fare.
+- Updated 2026-08-07 +02:00 (Europe/Berlin). `RequestBase` validates the
+  scenario-level `wrq` value (default `1.0`) and writes it to every user-stat
+  row as `rq_weight`; it does not create duplicate traveler objects.
 - `UserUtilityRequest.choose_offer` (`:678`) and `PTUtilityRequest.choose_offer`
   (`:761`) retain the selected offer's toll in addition to its fare.
 
@@ -936,3 +1056,32 @@ of rerouted vehicles, refreshed plans, and retained infeasible plans.
 - `record_stats` asks routing engines that provide
   `write_zone_speed_timeseries` to write `zone_speed_timeseries.csv` into the
   active result directory. Other routing engines are unaffected.
+
+### Representative request weight
+
+- Updated 2026-08-07 +02:00 (Europe/Berlin). Initialization validates `wrq`
+  as a positive finite value and stores the explicit default in the result
+  configuration. Selected PV routes, optional demand-file background PV rows,
+  and moving MoD MFD counts receive this weight. MoD vehicle objects,
+  assignments, capacity, and status updates remain physical and unreplicated.
+
+## `src/routing/NetworkBase.py` and `src/routing/NetworkTTMatrix.py`
+
+### Weighted route-assignment interface
+
+- Updated 2026-08-07 +02:00 (Europe/Berlin). The existing
+  `number_vehicles` argument is documented as a positive equivalent-vehicle
+  weight for one logical route. Routing backends that do not model traffic
+  continue to ignore it.
+
+## `src/evaluation/standard.py`
+
+### Request-weighted standard evaluation
+
+- Updated 2026-08-07 +02:00 (Europe/Berlin). Standard evaluation reads
+  `rq_weight` with a backward-compatible default of one. Request/passenger
+  totals, modal shares, direct-distance totals, user-time sums, fares, tolls,
+  subsidies, and offer counts use representative weights. Per-request means
+  use the same weights in numerator and denominator and therefore remain
+  unchanged for uniform `wrq`; vehicle kilometres, utilization, fleet size,
+  and other physical operator outputs remain unweighted.

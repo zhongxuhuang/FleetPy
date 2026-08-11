@@ -259,8 +259,8 @@ class NetworkBase(metaclass=ABCMeta):
         :type start_time: float
         :param end_time: optional parameter; can be used to assign a vehicle to the network for a certain time
         :type end_time: float
-        :param number_vehicles: optional parameter; can be used to assign multiple vehicles at once
-        :type number_vehicles: int
+        :param number_vehicles: optional equivalent-vehicle weight of the logical route
+        :type number_vehicles: float
         """
         # TODO # think about self.routing_engine.assign_route_to_network(rq_obj, sim_time)
         # -> computation of route only if necessary

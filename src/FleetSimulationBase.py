@@ -55,7 +55,8 @@ INPUT_PARAMETERS_FleetSimulationBase = {
     "input_parameters_optional": [
         G_SIM_TIME_STEP, G_NR_CH_OPERATORS, G_SIM_REALTIME_PLOT_FLAG, "log_level", G_SIM_ROUTE_OUT_FLAG, G_SIM_REPLAY_FLAG, G_INIT_STATE_SCENARIO,
         G_ZONE_SYSTEM_NAME, G_INFRA_NAME, G_RP_PRICING_M, G_RP_STATIC_TOLL_COEFF, G_RP_STATIC_TOLL_F, G_RP_K_CRIT,
-        G_RP_K_CRIT_F, G_RP_BASE_TOLL_COEFF, G_RP_MAX_TOLL_COEFF, G_RP_UPDATE_INT, G_RP_FALLBACK
+        G_RP_K_CRIT_F, G_RP_BASE_TOLL_COEFF, G_RP_MAX_TOLL_COEFF, G_RP_UPDATE_INT, G_RP_FALLBACK,
+        G_RQ_WEIGHT, G_MFD_EXOGENOUS_DENSITY_F
     ],
     "mandatory_modules": [
         G_SIM_ENV, G_NETWORK_TYPE, G_RQ_TYP1, G_OP_MODULE
@@ -145,6 +146,14 @@ class FleetSimulationBase:
         
         self.dir_names = self.get_directory_dict(scenario_parameters, self.list_op_dicts)
         self.scenario_parameters: dict = scenario_parameters
+        try:
+            self.request_weight = float(self.scenario_parameters.get(G_RQ_WEIGHT, 1.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{G_RQ_WEIGHT} must be a positive finite number") from exc
+        if not np.isfinite(self.request_weight) or self.request_weight <= 0:
+            raise ValueError(f"{G_RQ_WEIGHT} must be a positive finite number")
+        # Persist the explicit default in 00_config.json and every request row.
+        self.scenario_parameters[G_RQ_WEIGHT] = self.request_weight
 
         # check whether simulation already has been conducted -> use final_state.csv to check
         final_state_f = os.path.join(self.dir_names[G_DIR_OUTPUT], "final_state.csv")
@@ -733,7 +742,9 @@ class FleetSimulationBase:
                 for veh_obj in self.sim_vehicles.values()
                 if veh_obj.status in G_DRIVING_STATUS
             ]
-            self.routing_engine.update_mod_zone_vehicle_counts(moving_mod_positions)
+            self.routing_engine.update_mod_zone_vehicle_counts(
+                moving_mod_positions, vehicle_weight=self.request_weight
+            )
         if LOG.isEnabledFor(logging.DEBUG):
             status_counts = {}
             assigned_count = 0
@@ -782,7 +793,9 @@ class FleetSimulationBase:
                     )
                     continue
                 arrival_time, _ = self.routing_engine.return_route_infos(route, 0.0, trip_time)
-                self.routing_engine.assign_route_to_network(route, trip_time, arrival_time, 1)
+                self.routing_engine.assign_route_to_network(
+                    route, trip_time, arrival_time, self.request_weight
+                )
             except (IndexError, KeyError, ValueError) as error:
                 LOG.warning(
                     f"background trip skipped id={trip_id} time={trip_time} origin={origin} "
@@ -820,7 +833,9 @@ class FleetSimulationBase:
             rel_start_pos = 0.0 if rq_obj.o_pos[2] is None else rq_obj.o_pos[2]
             arrival_time, td = self.routing_engine.return_route_infos(route, rel_start_pos, sim_time)
             # TODO # think about changing the signature of assign_route_to_network()
-            self.routing_engine.assign_route_to_network(route, sim_time, arrival_time, 1)
+            self.routing_engine.assign_route_to_network(
+                route, sim_time, arrival_time, self.request_weight
+            )
             self._user_leaves_system(rid, sim_time)
         else:
             amod_confirmed_rids = self.broker.inform_user_booking(rid, rq_obj, sim_time, chosen_operator)
