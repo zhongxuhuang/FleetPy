@@ -56,7 +56,7 @@ INPUT_PARAMETERS_FleetSimulationBase = {
         G_SIM_TIME_STEP, G_NR_CH_OPERATORS, G_SIM_REALTIME_PLOT_FLAG, "log_level", G_SIM_ROUTE_OUT_FLAG, G_SIM_REPLAY_FLAG, G_INIT_STATE_SCENARIO,
         G_ZONE_SYSTEM_NAME, G_INFRA_NAME, G_RP_PRICING_M, G_RP_STATIC_TOLL_COEFF, G_RP_STATIC_TOLL_F, G_RP_K_CRIT,
         G_RP_K_CRIT_F, G_RP_BASE_TOLL_COEFF, G_RP_MAX_TOLL_COEFF, G_RP_UPDATE_INT, G_RP_FALLBACK,
-        G_RQ_WEIGHT, G_MFD_EXOGENOUS_DENSITY_F
+        G_RQ_WEIGHT, G_NETWORK_MODE, G_MFD_PARAMETERS_F, G_MFD_EXOGENOUS_DENSITY_F
     ],
     "mandatory_modules": [
         G_SIM_ENV, G_NETWORK_TYPE, G_RQ_TYP1, G_OP_MODULE
@@ -146,6 +146,42 @@ class FleetSimulationBase:
         
         self.dir_names = self.get_directory_dict(scenario_parameters, self.list_op_dicts)
         self.scenario_parameters: dict = scenario_parameters
+        network_mode = str(
+            self.scenario_parameters.get(G_NETWORK_MODE, "dynamic_mfd")
+        ).strip().lower()
+        if network_mode not in {"static", "dynamic_mfd"}:
+            raise ValueError(
+                f"{G_NETWORK_MODE} must be one of ['dynamic_mfd', 'static'], "
+                f"got {network_mode!r}"
+            )
+        self.scenario_parameters[G_NETWORK_MODE] = network_mode
+        network_dynamics_file = self.scenario_parameters.get(G_NW_DYNAMIC_F)
+        has_explicit_network_dynamics = (
+            network_dynamics_file is not None
+            and not pd.isna(network_dynamics_file)
+            and bool(str(network_dynamics_file).strip())
+        )
+        if network_mode == "static" and has_explicit_network_dynamics:
+            raise ValueError(
+                f"{G_NETWORK_MODE}=static conflicts with explicitly configured {G_NW_DYNAMIC_F}"
+            )
+        tariff_basis = str(
+            self.scenario_parameters.get(G_RP_TARIFF_BASIS, "")
+        ).strip().lower()
+        pricing_method = str(
+            self.scenario_parameters.get(G_RP_PRICING_M, "")
+        ).strip().lower()
+        uses_scheduled_tariff = pricing_method in {
+            "scheduledzonetariffpricing", "scheduled_zone_tariff"
+        }
+        if (
+            network_mode == "static"
+            and uses_scheduled_tariff
+            and tariff_basis in {"mfd_speed", "reference_mfd_speed"}
+        ):
+            raise ValueError(
+                f"{G_NETWORK_MODE}=static conflicts with {G_RP_TARIFF_BASIS}={tariff_basis}"
+            )
         try:
             self.request_weight = float(self.scenario_parameters.get(G_RQ_WEIGHT, 1.0))
         except (TypeError, ValueError) as exc:
@@ -255,6 +291,9 @@ class FleetSimulationBase:
         # TODO # check consistency of scenario inputs / another way to refactor add_init_data ?
         self.routing_engine: NetworkBase = load_routing_engine(network_type, self.dir_names[G_DIR_NETWORK],
                                                                network_dynamics_file_name=network_dynamics_file)
+        set_network_mode = getattr(self.routing_engine, "set_network_mode", None)
+        if callable(set_network_mode):
+            set_network_mode(self.scenario_parameters[G_NETWORK_MODE])
         if hasattr(self.routing_engine, "zones"):
             self.routing_engine.zones = self.zones
         self.road_pricing = load_road_pricing_policy(self.zones, self.scenario_parameters, self.dir_names)

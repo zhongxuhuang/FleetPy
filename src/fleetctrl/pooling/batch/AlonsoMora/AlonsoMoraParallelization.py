@@ -512,6 +512,9 @@ class ParallelProcess():
         network_type = self.scenario_parameters[G_NETWORK_TYPE]
         network_dynamics_file = self.scenario_parameters.get(G_NW_DYNAMIC_F, None)
         self.routing_engine = load_routing_engine(network_type, self.dir_names[G_DIR_NETWORK], network_dynamics_file_name=network_dynamics_file)
+        set_network_mode = getattr(self.routing_engine, "set_network_mode", None)
+        if callable(set_network_mode):
+            set_network_mode(self.scenario_parameters.get(G_NETWORK_MODE, "dynamic_mfd"))
 
         self.new_routing_data_loaded = False    # flag to tell if network changed
 

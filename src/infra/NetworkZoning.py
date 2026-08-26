@@ -32,7 +32,19 @@ class NetworkZoneSystem(ZoneSystem):
         self.road_pricing_policy = None
         self.current_park_costs = {}
         self.current_park_search_durations = {}
-        self.mfd_parameters = self._load_mfd_parameters()
+        self.network_mode = str(
+            scenario_parameters.get(G_NETWORK_MODE, "dynamic_mfd")
+        ).strip().lower()
+        if self.network_mode not in {"static", "dynamic_mfd"}:
+            raise ValueError(
+                f"{G_NETWORK_MODE} must be one of ['dynamic_mfd', 'static'], "
+                f"got {self.network_mode!r}"
+            )
+        self.mfd_parameters_file = None
+        self.mfd_parameters = (
+            self._load_mfd_parameters(scenario_parameters)
+            if self.network_mode == "dynamic_mfd" else {}
+        )
         self.mfd_exogenous_density_file = None
         self.mfd_exogenous_density_profiles = self._load_mfd_exogenous_density_profiles(
             scenario_parameters
@@ -42,17 +54,27 @@ class NetworkZoneSystem(ZoneSystem):
         # an absolute vehicle count per zone.
         self.mfd_network_lengths_km = {}
 
-    def _load_mfd_parameters(self):
-        """Load optional parabolic MFD parameters from the zone directory.
+    def _load_mfd_parameters(self, scenario_parameters):
+        """Load the configured parabolic MFD parameters for dynamic mode.
 
-        The optional ``mfd_parameters.csv`` file must contain ``zone_id``,
+        The file is resolved relative to the general zone directory and must
+        contain ``zone_id``,
         ``mfd_type``, ``v_kmh``, and ``gamma``. Currently, ``parabolic`` is
         the only supported MFD type and represents
         ``q(k) = v_kmh * k - gamma * k**2``.
         """
-        mfd_parameters_f = os.path.join(self.zone_general_dir, "mfd_parameters.csv")
+        configured_name = scenario_parameters.get(G_MFD_PARAMETERS_F, "mfd_parameters.csv")
+        if configured_name is None or pd.isna(configured_name) or not str(configured_name).strip():
+            raise ValueError(
+                f"{G_MFD_PARAMETERS_F} is required when {G_NETWORK_MODE}=dynamic_mfd"
+            )
+        configured_name = str(configured_name).strip()
+        mfd_parameters_f = (
+            configured_name if os.path.isabs(configured_name)
+            else os.path.join(self.zone_general_dir, configured_name)
+        )
         if not os.path.isfile(mfd_parameters_f):
-            return {}
+            raise FileNotFoundError(f"MFD parameter file does not exist: {mfd_parameters_f}")
 
         try:
             mfd_df = pd.read_csv(mfd_parameters_f)
@@ -69,7 +91,7 @@ class NetworkZoneSystem(ZoneSystem):
                 f"columns: {sorted(missing_columns)}"
             )
         if mfd_df.empty:
-            return {}
+            raise ValueError(f"MFD parameter file {mfd_parameters_f} is empty")
 
         try:
             zone_ids = pd.to_numeric(mfd_df["zone_id"], errors="raise")
@@ -120,6 +142,7 @@ class NetworkZoneSystem(ZoneSystem):
                 f"{unsupported_mfd_types}"
             )
 
+        self.mfd_parameters_file = mfd_parameters_f
         return {
             zone_id: {
                 "mfd_type": mfd_type,
@@ -195,18 +218,26 @@ class NetworkZoneSystem(ZoneSystem):
             )
 
         configured_zones = set(numeric_df["zone_id"].unique())
-        mfd_zones = set(self.mfd_parameters)
-        unknown_zones = sorted(configured_zones - mfd_zones)
-        if unknown_zones:
-            raise ValueError(
-                f"MFD exogenous density file {exogenous_f} references zones without an MFD: "
-                f"{unknown_zones}"
-            )
-        missing_zones = sorted(mfd_zones - configured_zones)
-        if missing_zones:
-            raise ValueError(
-                f"MFD exogenous density file {exogenous_f} is missing MFD zones: {missing_zones}"
-            )
+        if self.network_mode == "dynamic_mfd":
+            mfd_zones = set(self.mfd_parameters)
+            unknown_zones = sorted(configured_zones - mfd_zones)
+            if unknown_zones:
+                raise ValueError(
+                    f"MFD exogenous density file {exogenous_f} references zones without an MFD: "
+                    f"{unknown_zones}"
+                )
+            missing_zones = sorted(mfd_zones - configured_zones)
+            if missing_zones:
+                raise ValueError(
+                    f"MFD exogenous density file {exogenous_f} is missing MFD zones: {missing_zones}"
+                )
+        else:
+            unknown_zones = sorted(configured_zones - set(self.zones))
+            if unknown_zones:
+                raise ValueError(
+                    f"MFD exogenous density file {exogenous_f} references unknown zones: "
+                    f"{unknown_zones}"
+                )
 
         if (numeric_df["simulation_time"] < 0).any():
             raise ValueError(

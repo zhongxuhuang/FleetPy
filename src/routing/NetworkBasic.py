@@ -41,7 +41,7 @@ INPUT_PARAMETERS_NetworkBasic = {
     "doc" : "this routing class does all routing computations based on dijkstras algorithm",
     "inherit" : "NetworkBase",
     "input_parameters_mandatory": [G_NETWORK_NAME],
-    "input_parameters_optional": [G_NW_DYNAMIC_F],
+    "input_parameters_optional": [G_NW_DYNAMIC_F, G_NETWORK_MODE],
     "mandatory_modules": [],
     "optional_modules": []
 }
@@ -166,6 +166,12 @@ class NetworkBasic(NetworkBase):
         """
         self.nodes = []     #list of all nodes in network (index == node.node_index)
         self.network_name_dir = network_name_dir
+        self.network_mode = "dynamic_mfd"
+        self._network_dynamics_file_was_explicit = (
+            network_dynamics_file_name is not None
+            and not pd.isna(network_dynamics_file_name)
+            and bool(str(network_dynamics_file_name).strip())
+        )
         self._tt_infos_from_folder = True
         self._current_tt_factor = None
         self.travel_time_file_infos = self._load_tt_folder_path(network_dynamics_file_name=network_dynamics_file_name)
@@ -200,6 +206,30 @@ class NetworkBasic(NetworkBase):
         LOG.debug(
             f"network loaded zone vehicle counts={self.current_total_zone_vehicle_counts}"
         )
+
+    def set_network_mode(self, network_mode):
+        """Configure whether zone state updates may overwrite edge travel times.
+
+        Static mode must be selected before the first network update. It keeps
+        the base edge travel times loaded by ``loadNetwork`` and disables both
+        explicitly configured and automatically discovered time-dependent TT
+        sources.
+        """
+        mode = str(network_mode).strip().lower()
+        if mode not in {"static", "dynamic_mfd"}:
+            raise ValueError(
+                f"{G_NETWORK_MODE} must be one of ['dynamic_mfd', 'static'], got {mode!r}"
+            )
+        if mode == "static" and self._network_dynamics_file_was_explicit:
+            raise ValueError(
+                f"{G_NETWORK_MODE}=static conflicts with explicitly configured {G_NW_DYNAMIC_F}"
+            )
+        self.network_mode = mode
+        if mode == "static":
+            self.travel_time_file_infos = {}
+            self._current_tt_factor = None
+            self._tt_infos_from_folder = True
+        return self.network_mode
 
     def loadNetwork(self, network_name_dir, network_dynamics_file_name=None, scenario_time=None):
         nodes_f = os.path.join(network_name_dir, "base", "nodes.csv")
@@ -270,11 +300,37 @@ class NetworkBasic(NetworkBase):
         self.sim_time = simulation_time
         new_tt_flag = False
         if update_state:
+            if self.network_mode == "static":
+                self._update_static_network_state(simulation_time)
+                return False
             if self.travel_time_file_infos.get(simulation_time, None) is not None:
                 self.load_tt_file(simulation_time)
                 new_tt_flag = True
             new_tt_flag = self._update_dynamic_edge_travel_times(simulation_time) or new_tt_flag
         return new_tt_flag
+
+    def _update_static_network_state(self, simulation_time):
+        """Update traffic counts and audit speeds without changing any edge TT."""
+        zone_to_edges = self._get_zone_to_edge_cache()
+        if not zone_to_edges:
+            return False
+        self._update_current_zone_vehicle_counts(simulation_time)
+        zone_speed_summary = [
+            (
+                zone_id,
+                self.current_total_zone_vehicle_counts.get(zone_id, 0),
+                self._fixed_zone_queue_speeds.get(zone_id),
+                "static_base_tt",
+                len(edge_infos),
+            )
+            for zone_id, edge_infos in zone_to_edges.items()
+        ]
+        self._record_zone_speed_snapshot(simulation_time, zone_speed_summary)
+        LOG.debug(
+            f"static network state update at {simulation_time}: "
+            f"zones={len(zone_to_edges)}; base edge travel times unchanged"
+        )
+        return False
 
     def _update_dynamic_edge_travel_times(self, simulation_time):
         """Updates edge travel times from zone MFD speeds.
@@ -446,7 +502,10 @@ class NetworkBasic(NetworkBase):
         """
         fixed_speeds = {}
         for zone_id, edge_infos in zone_to_edges.items():
-            if self._get_zone_average_speed_from_mfd(zone_id, 0) is not None:
+            if (
+                getattr(self, "network_mode", "dynamic_mfd") != "static"
+                and self._get_zone_average_speed_from_mfd(zone_id, 0) is not None
+            ):
                 continue
             total_distance = 0.0
             total_tt = 0.0
@@ -901,9 +960,10 @@ class NetworkBasic(NetworkBase):
         their cached t=0 base-edge-TT-equivalent speed, so their PV queue can
         advance without changing any individual edge travel time.
         """
-        avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
-        if avg_speed is not None and avg_speed > 0:
-            return avg_speed
+        if getattr(self, "network_mode", "dynamic_mfd") != "static":
+            avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)
+            if avg_speed is not None and avg_speed > 0:
+                return avg_speed
         if zone_id not in self._fixed_zone_queue_speeds and self._zone_to_edge_cache is None:
             self._get_zone_to_edge_cache()
         return self._fixed_zone_queue_speeds.get(zone_id)

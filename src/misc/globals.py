@@ -60,6 +60,8 @@ G_SKIP_OUTPUT = "skip_file_writing"
 
 # network general attributes
 G_NETWORK_TYPE = "network_type"
+G_NETWORK_MODE = "network_mode"
+G_MFD_PARAMETERS_F = "mfd_parameters_file"
 # network specific attributes
 # -> dynamic networks
 G_NW_DENSITY_T_BIN_SIZE = "nw_density_temporal_bin_size"

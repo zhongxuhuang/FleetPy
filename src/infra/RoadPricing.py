@@ -609,6 +609,16 @@ def load_road_pricing_policy(zone_system, scenario_parameters, dir_names):
     pricing_method = str(pricing_method).strip()
     if pricing_method.lower() in {"", "none", "off", "disabled"}:
         return None
+    network_mode = str(scenario_parameters.get(G_NETWORK_MODE, "dynamic_mfd")).strip().lower()
+    tariff_basis = str(scenario_parameters.get(G_RP_TARIFF_BASIS, "")).strip().lower()
+    if (
+        network_mode == "static"
+        and pricing_method in {"ScheduledZoneTariffPricing", "scheduled_zone_tariff"}
+        and tariff_basis in {"mfd_speed", "reference_mfd_speed"}
+    ):
+        raise ValueError(
+            f"{G_NETWORK_MODE}=static conflicts with {G_RP_TARIFF_BASIS}={tariff_basis}"
+        )
     if pricing_method in {"StaticZoneDistancePricing", "static"}:
         return StaticZoneDistancePricing(zone_system, scenario_parameters, dir_names)
     if pricing_method in {"MyopicMFDZoneDistancePricing", "myopic_mfd"}:

@@ -151,10 +151,14 @@ additional source file.
   tab, and missing, non-numeric, or non-finite coordinates fail with a
   row-specific error.
 
-## `studies/mt/plot_compare_60x.py`
+## `studies/mt/function_compare/plot_compare.py`
 
 ### Three-scenario pricing comparison by zone
 
+- Updated 2026-08-11 +02:00 (Europe/Berlin). The generic multi-scenario
+  comparison entry point was grouped under `function_compare/`. Direct script
+  execution remains supported; shared helpers continue to come from the
+  parent `studies/mt/analysis_common.py` module.
 - Added 2026-07-30 +02:00 (Europe/Berlin). The script compares
   `mt_test_60x_base`, `mt_test_60x_mfd`, and `mt_test_60x_time`,
   writing reproducible figures and source CSV tables to the baseline run's
@@ -286,11 +290,19 @@ additional source file.
   `N_critical = (v_free / (2 * gamma)) * L_zone`, where zone length is the
   sum of outgoing network-edge distances assigned to the source zone. The
   traffic records use the run's existing vehicle counts.
-- Delay is evaluated only for PV and MOD selected trips as
-  `max(selected_mode_travel_time - direct_route_travel_time, 0)` and averaged
-  in 15-minute request-time bins by origin zone. This avoids interpreting the
-  inherently slower non-road alternatives as road congestion delay. Selected
-  generalized cost is reconstructed from the recorded selected utility as
+- Updated 2026-08-13 +02:00 (Europe/Berlin). The former pooled PV/MOD delay
+  calculation was replaced because PV selected time equals its direct-route
+  time by construction, while MoD selected time includes offered waiting time.
+  Each zone delay figure now contains three panels for completed MoD trips:
+  realized waiting time `(pickup_time - rq_time)`, signed in-vehicle excess
+  time `(dropoff_time - pickup_time - direct_route_travel_time)`, and signed
+  total excess time `(dropoff_time - rq_time - direct_route_travel_time)`.
+  Values are request-weighted within 15-minute request-time bins and the source
+  CSV records both physical completed-request counts and representative
+  request weight. Validated across the five current Base/CTP/CDP/DTP/DDP runs;
+  every exported mean satisfies total excess = waiting + in-vehicle excess to
+  floating-point precision.
+- Selected generalized cost is reconstructed from the recorded selected utility as
   `(ASC_selected - U_selected) / beta_money`, consistent with the existing
   welfare analysis. Validated 2026-07-30 +02:00 (Europe/Berlin) against the
   three named result directories; the common figure writer reserves space for
@@ -301,6 +313,59 @@ additional source file.
   parameters; scenario colors, grouped-bar positions, legend columns, request
   annotations, metadata, and reference-dependent calculations are generated
   from the supplied input order rather than fixed 60x policy names.
+- Updated 2026-08-13 +02:00 (Europe/Berlin). Accumulation and speed figures
+  represent the common CDP/DDP density thresholds as three horizontal,
+  progressively deeper light-orange background tiers. The active tariff
+  schedule's speed limits are converted through each zone's MFD to density;
+  the validated intervals are `0.75 k_critical--k_critical` (approaching),
+  `k_critical--1.25 k_critical` (congested), and
+  `1.25 k_critical--2 k_critical` (severe). The derived boundaries are written
+  to `accumulation/density_pricing_tiers.csv`. Delay has no density-equivalent
+  y-axis and therefore retains only the time-of-day background.
+- Updated 2026-08-13 +02:00 (Europe/Berlin). Density-tier backgrounds no
+  longer expand traffic plots to the full tariff range. Accumulation ends 8%
+  above the highest displayed scenario, exogenous, or threshold line; speed
+  uses a 6% data-range margin (at least 0.5 km/h) above and below its visible
+  lines, capped at the MFD free speed. Tariff layers outside those useful plot
+  ranges are clipped.
+- Updated 2026-08-13 +02:00 (Europe/Berlin). Pricing comparisons now keep
+  charge types in separate subdirectories: `pricing/cordon/` plots
+  `entry_fee_cent` as euros for cordon scenarios, while `pricing/distance/`
+  plots `distance_rate_cent_per_m` as euros per kilometre for distance-tariff
+  scenarios. This displays time-of-day and MFD-responsive variants within each
+  charge category without mixing incompatible units on one axis.
+- Updated 2026-08-13 +02:00 (Europe/Berlin). Distance-conditioned mode-share
+  outputs are now grouped below `mode_share/distance/`, while the standalone
+  fixed-cohort distance distribution remains in `distance_distribution/`.
+  Percentage labels above bars in both overall/origin-zone and distance-band
+  mode-share figures use 7-point text to prevent overlap in five-scenario
+  comparisons.
+- Updated 2026-08-13 +02:00 (Europe/Berlin). Accumulation panels additionally
+  plot the reference scenario's recorded `exogenous_vehicle_count` as a light
+  grey dashed `base exogenous` line. The same series is appended to each zone's
+  accumulation source CSV; other traffic-comparison topics remain unchanged.
+- Updated 2026-08-13 +02:00 (Europe/Berlin). Time-series legends represent the
+  blue scheduled windows with one horizontally split light/deep-blue handle
+  labelled `Time-of-day pricing`. The three light-orange density backgrounds
+  use one combined handle labelled `Density-based pricing tiers`, without
+  separate tier explanations or hatching.
+- Updated 2026-08-13 +02:00 (Europe/Berlin). Time-of-day blue windows are no
+  longer hard-coded to the morning peak. They are read from the active tariff
+  CSV, restricted to positive-charge rows and the current simulation-window
+  intersection, with blue intensity derived from the relative tariff level.
+  The complete detected schedule is exported to
+  `metadata/time_of_day_pricing_windows.csv`; it includes the 15:30--18:30
+  afternoon window even though the current 06:00--10:00 runs cannot display
+  that non-overlapping period.
+- Updated 2026-08-13 +02:00 (Europe/Berlin). Pricing outputs are recombined as
+  one `pricing/zone_<id>` figure and CSV per zone: cordon charges use the left
+  euro axis, while distance tariffs use the right euro-per-kilometre axis. The
+  plot uses solid cordon lines and dashed distance-tariff lines so coincident
+  dual-axis trajectories remain distinguishable. The merged CSV records a
+  numeric `value` and explicit `unit`. MFD density axis labels, ticks, and
+  spines use black like the other axes, and generalized-
+  cost bar labels use 7-point text to avoid five-scenario overlap. Existing
+  `pricing/cordon/` and `pricing/distance/` outputs are retained.
 - When `--output-dir` is omitted, output is written to `compare/` inside the
   first scenario directory. Validated with `Base` and `SP` inputs for
   `mt_06_10_rq_raw_matsim_5x_wrq2_exogenous_base` and
@@ -308,10 +373,14 @@ additional source file.
   scenarios generated 40 PNG figures and 42 CSV tables/files under the base
   result's `compare/`, with Zone 5 excluded by default.
 
-## `studies/mt/plot_all_metrics.py`
+## `studies/mt/function_analyse/plot_all_metrics.py`
 
 ### One-command single-scenario metrics generation
 
+- Updated 2026-08-11 +02:00 (Europe/Berlin). The wrapper and its four metric
+  scripts were grouped under `function_analyse/`. The wrapper still resolves
+  the four child scripts relative to its own directory, so its orchestration
+  behavior is unchanged.
 - Added 2026-07-29 +02:00 (Europe/Berlin). The command-line wrapper accepts one
   FleetPy result directory and sequentially runs the demand/mode, MFD traffic,
   MoD-operation, and user-welfare plot scripts using the active Python
@@ -325,7 +394,7 @@ additional source file.
   traffic output by default. Pass `--include-zone-5` to forward that override
   only to the MFD traffic script in a batch run.
 
-## `studies/mt/plot_mfd_traffic_metrics.py`
+## `studies/mt/function_analyse/plot_mfd_traffic_metrics.py`
 
 ### Default Zone 5 exclusion
 
@@ -446,10 +515,15 @@ additional source file.
   row, matching `ZoneSystem`; nodes with multiple zone rows also receive a
   semicolon-delimited `zone_id_candidates` field for boundary review.
 
-## `studies/mt/analysis_common.py` and the four single-scenario analysis scripts
+## `studies/mt/analysis_common.py` and `studies/mt/function_analyse/`
 
 ### Demand, MFD, MoD-operation, and user-welfare result figures
 
+- Updated 2026-08-11 +02:00 (Europe/Berlin). The four single-scenario scripts
+  now live in `function_analyse/`; `analysis_common.py` remains one level above
+  them because it is shared with `function_compare/plot_compare.py`. Each
+  moved script adds the parent study directory to its import path so the
+  existing direct-file CLI invocation continues to work.
 - Added 2026-07-23 +02:00 (Europe/Berlin).
 - `plot_demand_mode_metrics.py`, `plot_mfd_traffic_metrics.py`,
   `plot_mod_operations_metrics.py`, and `plot_user_welfare_metrics.py` each
@@ -482,10 +556,17 @@ additional source file.
   are weighted. Vehicle occupancy, VKT, utilization, fleet size, and other
   physical MoD-operation metrics remain unweighted.
 
-## `studies/mt/build_mfd_exogenous_profile.py`
+## `src/preprocessing/demand/build_mfd_exogenous_profile.py`
 
 ### Fixed Munich MFD exogenous profile generation
 
+- Updated 2026-08-11 +02:00 (Europe/Berlin). Moved the preprocessing utility
+  from `studies/mt/` into `src/preprocessing/demand/`. Its repository-root
+  resolution and regression-test import were updated so the existing default
+  source, zone, and network paths remain unchanged. The default generated CSV
+  is now written beside the script as
+  `src/preprocessing/demand/mfd_exogenous_density_5x_wrq2.csv`; an explicit
+  `--output-file` continues to select another protected output path.
 - Added 2026-08-07 +02:00 (Europe/Berlin). The protected-output CLI reads the
   no-MoD 10% baseline `zone_speed_timeseries.csv`, uses only
   `pv_vehicle_count`, validates a complete 30-second grid, applies a centered
@@ -600,6 +681,9 @@ additional source file.
 
 ### Generic choice-distribution histogram
 
+- Updated 2026-08-11 +02:00 (Europe/Berlin). The command-line positional
+  argument now accepts only a FleetPy result directory and automatically reads
+  its `1_user-stats.csv`. Passing the full CSV path is no longer supported.
 - Updated 2026-07-25 +02:00 (Europe/Berlin). MNL user statistics now include
   `selected_mode_travel_time` in seconds: PV uses the direct road TT; WALK and
   BIKE use direct-route distance divided by their configured speeds; PT uses
@@ -1085,3 +1169,44 @@ of rerouted vehicles, refreshed plans, and retained infeasible plans.
   use the same weights in numerator and denominator and therefore remain
   unchanged for uniform `wrq`; vehicle kilometres, utilization, fleet size,
   and other physical operator outputs remain unweighted.
+
+## `data/zones/mt/Aimsun_Munich_2020/munich_zone_tariff_val1.csv`
+
+### MFD-responsive distance pricing rows
+
+- Updated 2026-08-13 +02:00 (Europe/Berlin). Appended 21 `distance,mfd_speed`
+  rows without changing the existing 105 tariff rows. Zones 0--4 reuse the
+  existing MFD speed-band thresholds and charge 0/1/2/4 EUR per kilometre for
+  free/approaching/congested/severe traffic respectively; Zone 5 remains free.
+
+## `data/zones/mt/Aimsun_Munich_2020/zone_tariff.md`
+
+### Human-readable `val1` tariff reference
+
+- Added 2026-08-13 +02:00 (Europe/Berlin). Summarizes the CTP, DTP, CDP, and
+  DDP tariff tiers from `munich_zone_tariff_val1.csv`, including clock-time
+  conversions, charge units, density ratios, exact Zone 0--4 MFD speed
+  intervals, and the always-free Zone 5 rule. The simulation continues to read
+  the CSV; this Markdown file is documentation only.
+
+## Static/dynamic MFD network mode
+
+- Added 2026-08-22 +02:00 (Europe/Berlin). The new `network_mode` input accepts
+  `static` or `dynamic_mfd` and defaults to `dynamic_mfd`. Dynamic mode resolves
+  the required `mfd_parameters_file` relative to the general zone directory;
+  both modes may load `mfd_exogenous_density_file` from the network-specific
+  zone directory.
+- `NetworkBasic` now separates zone vehicle-count updates from edge-TT updates.
+  Static mode retains weighted PV queues, moving-MoD synchronization,
+  exogenous counts, and `zone_speed_timeseries.csv`, records
+  `speed_source=static_base_tt`, clears automatically discovered numeric TT
+  folders, and never writes a zone speed back to an edge. Dynamic mode retains
+  the existing MFD edge-TT update behavior.
+- Startup validation rejects invalid modes, missing dynamic MFD parameter files,
+  `static` with explicit `nw_dynamic_f`, and scheduled `mfd_speed` tariffs with
+  `static`. MT configuration now declares the mode and both input files in
+  `const_cfg_mt.yaml`; the mod3/mod25 scenario CSVs inherit the shared
+  exogenous profile, while the legacy calibration scenario explicitly selects
+  static/no-pricing behavior with no exogenous profile.
+- Munich analysis resolves the configured MFD parameter file in dynamic mode
+  and omits MFD congestion thresholds for static result configurations.
