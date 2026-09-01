@@ -1,5 +1,9 @@
 import logging
+import math
+import os
 import time
+
+import pandas as pd
 
 from src.simulation.Offers import TravellerOffer
 from src.fleetctrl.FleetControlBase import FleetControlBase
@@ -10,12 +14,28 @@ from src.misc.globals import *
 
 LOG = logging.getLogger(__name__)
 LARGE_INT = 100000
+MOD_DESTINATION_GATING_OUTPUT_COLUMNS = [
+    "sim_time",
+    "request_id",
+    "destination_zone",
+    "vehicle_count",
+    "critical_accumulation",
+    "load_ratio",
+    "gate_state_before",
+    "gate_state_after",
+    "gating_decision",
+    "reason",
+]
 
 INPUT_PARAMETERS_PoolingInsertionHeuristicOnly = {
     "doc" : "this class represents a ride-pooling MoD-operator. the operators uses an insertion heuristic for assignment",
     "inherit" : "FleetControlBase",
     "input_parameters_mandatory": [],
-    "input_parameters_optional": [],
+    "input_parameters_optional": [
+        G_OP_MOD_DEST_GATING,
+        G_OP_MOD_DEST_GATING_CLOSE,
+        G_OP_MOD_DEST_GATING_OPEN,
+    ],
     "mandatory_modules": [],
     "optional_modules": []
 }
@@ -61,6 +81,188 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
         # others # TODO # standardize IRS assignment memory?
         self.tmp_assignment = {}  # rid -> VehiclePlan
         self._init_dynamic_fleetcontrol_output_key(G_FCTRL_CT_RQU)
+        self._initialize_mod_destination_gating(
+            operator_attributes, scenario_parameters, zone_system, dir_names
+        )
+
+    def _initialize_mod_destination_gating(
+            self, operator_attributes, scenario_parameters, zone_system, dir_names):
+        """Validate and initialize optional MFD-based destination gating."""
+        enabled = operator_attributes.get(G_OP_MOD_DEST_GATING, False)
+        if type(enabled) is not bool:
+            raise ValueError(f"{G_OP_MOD_DEST_GATING} must be True or False.")
+
+        self.mod_destination_gating_enabled = enabled
+        self.mod_destination_gating_close_ratio = None
+        self.mod_destination_gating_open_ratio = None
+        self._mod_destination_gate_closed = {}
+        self._mod_destination_gating_records = []
+        self._mod_destination_gating_zone_system = zone_system
+        self.mod_destination_gating_output_f = None
+        if not enabled:
+            return
+
+        network_mode = str(
+            scenario_parameters.get(G_NETWORK_MODE, "dynamic_mfd")
+        ).strip().lower()
+        if network_mode != "dynamic_mfd":
+            raise ValueError(
+                f"{G_OP_MOD_DEST_GATING}=True requires {G_NETWORK_MODE}=dynamic_mfd."
+            )
+
+        close_ratio = operator_attributes.get(G_OP_MOD_DEST_GATING_CLOSE, 1.0)
+        open_ratio = operator_attributes.get(G_OP_MOD_DEST_GATING_OPEN, 0.9)
+        try:
+            close_ratio = float(close_ratio)
+            open_ratio = float(open_ratio)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{G_OP_MOD_DEST_GATING_CLOSE} and {G_OP_MOD_DEST_GATING_OPEN} "
+                "must be finite numbers."
+            ) from exc
+        if not math.isfinite(close_ratio) or close_ratio <= 0:
+            raise ValueError(f"{G_OP_MOD_DEST_GATING_CLOSE} must be finite and positive.")
+        if not math.isfinite(open_ratio) or not 0 <= open_ratio < close_ratio:
+            raise ValueError(
+                f"{G_OP_MOD_DEST_GATING_OPEN} must satisfy 0 <= open ratio < close ratio."
+            )
+
+        required_zone_methods = ("get_zone_from_pos", "get_mfd_critical_accumulation")
+        missing_zone_methods = [
+            name for name in required_zone_methods
+            if not callable(getattr(zone_system, name, None))
+        ]
+        if missing_zone_methods:
+            raise ValueError(
+                f"{G_OP_MOD_DEST_GATING}=True requires zone-system methods "
+                f"{missing_zone_methods}."
+            )
+        if not callable(getattr(self.routing_engine, "get_current_zone_vehicle_counts", None)):
+            raise ValueError(
+                f"{G_OP_MOD_DEST_GATING}=True requires "
+                "routing_engine.get_current_zone_vehicle_counts()."
+            )
+
+        self.mod_destination_gating_close_ratio = close_ratio
+        self.mod_destination_gating_open_ratio = open_ratio
+        self.mod_destination_gating_output_f = os.path.join(
+            dir_names[G_DIR_OUTPUT], f"5-{self.op_id}_mod_destination_gating.csv"
+        )
+
+    @staticmethod
+    def _gate_state_label(is_closed):
+        return "closed" if is_closed else "open"
+
+    def _append_mod_destination_gating_record(
+            self, sim_time, request_id, destination_zone, vehicle_count,
+            critical_accumulation, load_ratio, state_before, state_after,
+            decision, reason):
+        self._mod_destination_gating_records.append({
+            "sim_time": sim_time,
+            "request_id": request_id,
+            "destination_zone": destination_zone,
+            "vehicle_count": vehicle_count,
+            "critical_accumulation": critical_accumulation,
+            "load_ratio": load_ratio,
+            "gate_state_before": self._gate_state_label(state_before),
+            "gate_state_after": self._gate_state_label(state_after),
+            "gating_decision": decision,
+            "reason": reason,
+        })
+
+    def _evaluate_mod_destination_gating(self, prq, sim_time):
+        """Return ``True`` when a new request must be rejected by hard gating."""
+        if not getattr(self, "mod_destination_gating_enabled", False):
+            return False
+
+        request_id = prq.get_rid_struct()
+        zone_system = self._mod_destination_gating_zone_system
+        destination_zone = zone_system.get_zone_from_pos(prq.d_pos)
+        if destination_zone is None or destination_zone == -1:
+            self._append_mod_destination_gating_record(
+                sim_time, request_id, destination_zone, None, None, None,
+                False, False, "allow", "unmapped_destination"
+            )
+            return False
+
+        critical_accumulation = zone_system.get_mfd_critical_accumulation(
+            destination_zone
+        )
+        if critical_accumulation is None:
+            self._append_mod_destination_gating_record(
+                sim_time, request_id, destination_zone, None, None, None,
+                False, False, "allow", "zone_without_mfd"
+            )
+            return False
+        critical_accumulation = float(critical_accumulation)
+        if not math.isfinite(critical_accumulation) or critical_accumulation <= 0:
+            raise ValueError(
+                f"Invalid MFD critical accumulation for zone {destination_zone}: "
+                f"{critical_accumulation}"
+            )
+
+        zone_counts = self.routing_engine.get_current_zone_vehicle_counts()
+        if destination_zone not in zone_counts:
+            raise ValueError(
+                f"No current vehicle count is available for MFD zone {destination_zone}."
+            )
+        vehicle_count = float(zone_counts[destination_zone])
+        if not math.isfinite(vehicle_count) or vehicle_count < 0:
+            raise ValueError(
+                f"Invalid current vehicle count for zone {destination_zone}: {vehicle_count}"
+            )
+        load_ratio = vehicle_count / critical_accumulation
+
+        state_before = self._mod_destination_gate_closed.get(destination_zone, False)
+        if state_before:
+            if load_ratio < self.mod_destination_gating_open_ratio:
+                state_after = False
+                reason = "reopen_threshold_reached"
+            else:
+                state_after = True
+                reason = "held_closed"
+        elif load_ratio >= self.mod_destination_gating_close_ratio:
+            state_after = True
+            reason = "close_threshold_reached"
+        else:
+            state_after = False
+            reason = "held_open"
+
+        self._mod_destination_gate_closed[destination_zone] = state_after
+        decision = "reject" if state_after else "allow"
+        self._append_mod_destination_gating_record(
+            sim_time, request_id, destination_zone, vehicle_count,
+            critical_accumulation, load_ratio, state_before, state_after,
+            decision, reason
+        )
+        return state_after
+
+    def _flush_mod_destination_gating_records(self):
+        """Append buffered request-level gating decisions to the audit CSV."""
+        if (
+            not getattr(self, "mod_destination_gating_enabled", False)
+            or not getattr(self, "_mod_destination_gating_records", None)
+        ):
+            return
+        records = pd.DataFrame(
+            self._mod_destination_gating_records,
+            columns=MOD_DESTINATION_GATING_OUTPUT_COLUMNS,
+        )
+        write_header = not os.path.isfile(self.mod_destination_gating_output_f)
+        records.to_csv(
+            self.mod_destination_gating_output_f,
+            mode="a",
+            header=write_header,
+            index=False,
+        )
+        self._mod_destination_gating_records = []
+
+    def _record_user_request_time(self, sim_time, start_time):
+        """Add one request's computation time to the standard operator output."""
+        duration = round(time.perf_counter() - start_time, 5)
+        previous = self._get_current_dynamic_fleetcontrol_value(sim_time, G_FCTRL_CT_RQU)
+        total = duration if previous is None else previous + duration
+        self._add_to_dynamic_fleetcontrol_output(sim_time, {G_FCTRL_CT_RQU: total})
 
     def receive_status_update(self, vid, simulation_time, list_finished_VRL, force_update=True):
         """This method can be used to update plans and trigger processes whenever a simulation vehicle finished some
@@ -112,6 +314,17 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
             self._create_rejection(prq, sim_time)
             return
 
+        if self._evaluate_mod_destination_gating(prq, sim_time):
+            LOG.debug(
+                "destination gating rejects rid %s at time %s for destination %s",
+                rid_struct,
+                sim_time,
+                prq.d_pos,
+            )
+            self._create_rejection(prq, sim_time)
+            self._record_user_request_time(sim_time, t0)
+            return
+
         o_pos, t_pu_earliest, t_pu_latest = prq.get_o_stop_info()
         if t_pu_earliest - sim_time > self.opt_horizon:
             self.reservation_module.add_reservation_request(prq, sim_time)
@@ -132,14 +345,7 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
             self.repo.register_user_request(prq, sim_time)
                             
         # record cpu time
-        dt = round(time.perf_counter() - t0, 5)
-        old_dt = self._get_current_dynamic_fleetcontrol_value(sim_time, G_FCTRL_CT_RQU)
-        if old_dt is None:
-            new_dt = dt
-        else:
-            new_dt = old_dt + dt
-        output_dict = {G_FCTRL_CT_RQU: new_dt}
-        self._add_to_dynamic_fleetcontrol_output(sim_time, output_dict)
+        self._record_user_request_time(sim_time, t0)
 
     def user_confirms_booking(self, rid, simulation_time):
         """This method is used to confirm a customer booking. This can trigger some database processes.
@@ -224,6 +430,7 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
         :param simulation_time: current simulation time
         :type simulation_time: float
         """
+        self._flush_mod_destination_gating_records()
         self.sim_time = simulation_time
         self.pos_veh_dict = {}  # pos -> list_veh
 

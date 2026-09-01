@@ -433,9 +433,10 @@ class NetworkBasic(NetworkBase):
     def get_current_zone_vehicle_counts(self):
         """Return a snapshot of total current vehicle counts by zone.
 
-        The count combines active PV route segments and moving MoD vehicles.
-        Callers receive a copy so they cannot modify the routing engine's MFD
-        state while using it for read-only calculations such as road pricing.
+        The count combines weighted active PV route segments, weighted moving
+        MoD vehicles, and fixed exogenous equivalent counts. Callers receive a
+        copy so they cannot modify the routing engine's MFD state while using
+        it for read-only calculations such as road pricing or request gating.
         """
         return self.current_total_zone_vehicle_counts.copy()
 

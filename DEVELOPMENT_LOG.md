@@ -4,6 +4,272 @@ This document records source-level changes, equations, and implementation notes
 for files that require quick future reference. Add a new top-level entry for each
 additional source file.
 
+## `studies/mt/scenarios/mod25/06-10_15-20/scenario_cfg_mt_5x_w2_m25_ex_v1_h_g.csv`
+
+### Hard-gating activation for the val1 hailing pricing scenarios
+
+- Updated 2026-09-01 +02:00 (Europe/Berlin). Enabled MFD destination hard
+  gating for all eight AM/PM CTP, CDP, DTP, and DDP rows with close ratio `1.0`
+  and reopen ratio `0.9`. Every scenario retains its existing demand, 3,000
+  capacity-one hailing vehicles, dynamic-MFD network, val1 road-pricing policy,
+  request weight, and time window.
+- Added `_g` to every internal `scenario_name` so these gated runs write to
+  separate result directories and cannot overwrite the corresponding ungated
+  pricing baselines.
+
+## `src/fleetctrl/PoolingIRSOnly.py`, `src/infra/NetworkZoning.py`, and `src/routing/NetworkBasic.py`
+
+### MFD-based hard gating for new MoD requests by destination zone
+
+- Added 2026-09-01 +02:00 (Europe/Berlin). `PoolingIRSOnly` can now reject a
+  new request before insertion when its destination MFD zone is closed. The
+  feature is operator-specific and disabled by default through
+  `op_mod_destination_gating: False`; enabling it requires
+  `network_mode: dynamic_mfd`, a finite positive close ratio, and an open ratio
+  satisfying `0 <= open < close`.
+- The default policy closes an open zone at `N_z / N_z_crit >= 1.0`, keeps it
+  closed through the hysteresis band, and reopens it only below `0.9`.
+  `NetworkZoneSystem.get_mfd_critical_accumulation()` derives
+  `N_z_crit = [v_z / (2 gamma_z)] L_z` from the configured parabolic MFD and
+  directed zone length. The live count is the routing snapshot
+  `N_z = N_z_PV + N_z_MoD + N_z_exogenous` already used for MFD travel times.
+- The gate is evaluated after the existing identical-origin/destination check
+  and before reservation or insertion processing. A closed destination calls
+  the existing rejection path, creates no temporary vehicle assignment, and
+  therefore leaves MoD out of the request's MNL alternatives. Existing trips,
+  empty movement, and repositioning are unchanged. Unmapped destinations and
+  zones without an MFD, including Munich Zone 5, remain open.
+- When enabled, request decisions are buffered by time step and written to
+  `5-<operator_id>_mod_destination_gating.csv`, including the destination zone,
+  live and critical accumulation, load ratio, before/after gate state,
+  `allow`/`reject`, and a stable transition reason. Disabled scenarios do not
+  create this output.
+- `studies/mt/scenarios/const_cfg_mt.yaml` documents the default-off switch and
+  the `1.0` close / `0.9` reopen ratios. No existing scenario is activated and
+  no AM/PM simulation result is changed.
+- Validation: the new `tests.test_mod_destination_gating` suite covers the
+  threshold boundary, hysteresis, no-MFD/unmapped zones, skipped insertion,
+  MNL exclusion, per-operator audit files, invalid startup configurations, and
+  the synthetic network-to-CSV smoke chain. Together with PoolingIRSOnly,
+  MFD-exogenous, road-pricing, and network-count regressions, all 39 targeted
+  tests passed. Modified Python files compiled, the MT defaults parsed as
+  `False/1.0/0.9`, and `git diff --check` reported no whitespace errors.
+
+## `studies/mt/create_pricing_robustness_chapter4_figures.py`
+
+### Policy-ranking robustness against the two MoD assumptions
+
+- Added 2026-09-01 +02:00 (Europe/Berlin). The Chapter 4 pricing analysis runs
+  on one MoD configuration, capacity-one hailing at the higher assumed
+  penetration, so two unobserved assumptions sit underneath every policy
+  conclusion. This script repeats the same five-policy comparison with each
+  assumption changed in turn and reports whether the ordering survives.
+- Two comparisons are selected through `--comparison`. `service` contrasts
+  capacity-one hailing with capacity-four ridepooling at
+  `mode_choice_asc_mod = 603`; `penetration` contrasts
+  `mode_choice_asc_mod = 603` with `420.6`, both on the capacity-four
+  ridepooling fleet. Each arm is compared against its own unpriced base, so the
+  level difference between arms does not enter the comparison of policy
+  effects.
+- Configuration matching is pairwise: each scenario is checked against the same
+  policy in the other arm rather than against a single global reference,
+  because the active tariff file legitimately differs between the unpriced base
+  and the priced policies within one arm. The field that the comparison varies
+  is excluded per comparison through the `varying` entry.
+- Several of the ridepooling runs predate the recording of `network_mode` and
+  `mfd_parameters_file` in `00_config.json`. `load_traffic()` therefore checks
+  the `speed_source` column of `zone_speed_timeseries.csv`, which is the
+  authoritative record of whether the MFD was active, and raises if a run
+  contains no effective MFD rows.
+- Writes `source_results.csv`, `matched_configuration.csv`,
+  `configuration_warnings.csv`, `policy_outcomes_by_arm.csv`,
+  `policy_deltas_by_arm.csv`, `policy_ranking_by_arm.csv`, and
+  `rank_agreement.csv`, plus one title-free PNG per comparison, under
+  `studies/mt/results/mt/thesis_pricing_robustness_{service,penetration}`.
+- Validation. The four unpriced base runs reproduce the values already
+  published in the Chapter 4 hailing-pooling table exactly: critical durations
+  of 34.0, 31.0, 78.0, and 76.0 minutes, MoD VKT of 91,170, 57,124, 175,389,
+  and 105,584 km, and mean occupancies of 0.808, 1.564, 0.829, and 1.701.
+- Derived result for the service comparison. Every Chapter 4 conclusion
+  reproduces. The predetermined policies remove essentially all critical time
+  under both services; the responsive policies leave 14.5-16.5 minutes in the
+  morning and 10.0-40.5 in the afternoon; the cost ordering DDP < CDP < DTP <
+  CTP is identical in both services and periods; and the afternoon separation
+  between the two responsive policies is 29.5 minutes under hailing against
+  26.5 under ridepooling. No policy differs by more than 4.0 minutes of
+  critical duration or 0.27 percentage points of cost between the services.
+
+## `studies/mt/create_ch3_context_figures.py`
+
+### Full-day context figure for the thesis period selection
+
+- Added 2026-09-01 +02:00 (Europe/Berlin). New read-only analysis script that
+  derives the full-day zone accumulation profile used to justify the morning
+  and afternoon simulation windows in thesis Chapter 3, which previously had a
+  figure placeholder and no supporting evidence.
+- The script resolves the node-to-zone mapping, MFD parameter file, and network
+  edge file from the run's own configuration through
+  `analysis_common.zone_paths`, then reproduces the simulation's own accounting:
+  directed zone length from `edges.csv` grouped by the `from_node` zone with
+  boundary nodes resolved by first occurrence, critical density
+  `k_crit = v_free / (2 * gamma)` from the parabolic MFD, and critical
+  accumulation `N_crit = k_crit * L_zone`. The derived critical accumulations
+  reproduce the values quoted in the thesis: 15,176, 10,766, 8,856, 7,323, and
+  1,793 vehicles for Zones 0-4.
+- Defaults to the completed full-day run
+  `results/5x/3000/mod3/mt_00_24_rq_raw_matsim_5x_wrq2_mod3_ex_base` and writes
+  `source_results.csv`, `critical_thresholds.csv`,
+  `period_selection_summary.csv`, `fullday_accumulation_series.csv`, and the
+  title-free `ch3_fullday_accumulation_profile.png` under
+  `studies/mt/results/mt/thesis_ch3_context`.
+- Derived result supporting the period selection. Only Zones 1 and 2 reach the
+  critical state, at full-day peaks of 1.053 and 1.048, and both peaks fall
+  inside the two selected windows. Outside those windows the highest load in
+  any zone is 0.851 of critical, reached by Zone 2 around midday, so no
+  unsimulated part of the day contains the traffic conditions the pricing
+  experiments are designed to test.
+
+## `studies/mt/create_hailing_pricing_chapter4_figures.py`
+
+### Tariff activation lead time and spatial targeting
+
+- Added 2026-09-01 +02:00 (Europe/Berlin). The script now derives why the two
+  tariff timing rules differ, rather than leaving the ranking unexplained.
+  `lead_time_table()` locates, for every zone that reaches its critical
+  accumulation in the unpriced reference, the time at which the unpriced state
+  crosses the first priced band (0.75 x critical) and the critical level, the
+  first simulation time at which each policy applies a positive charge in that
+  zone, and the resulting lead times. `targeting_table()` joins the existing
+  per-zone tariff-activation summary to the realised unpriced peak load so that
+  charging effort can be read against whether a zone ever approaches
+  congestion.
+- Two CSVs are written next to the existing outputs: `tariff_lead_time.csv`
+  and `tariff_targeting.csv`. A sixth title-free PNG,
+  `hailing_pricing_lead_time.png`, contrasts the two timing rules in the three
+  zone-period combinations that reach the critical state. CTP and DTP share a
+  time-of-day schedule and therefore activate together, as do CDP and DDP, so
+  the panels use the distance policies as representatives of the two rules and
+  reuse `POLICY_COLORS` for consistency with the neighbouring figures.
+- Derived result. The predetermined schedule is active 60 minutes before Zone 2
+  reaches its critical state in the morning and 86 and 70 minutes before
+  Zones 1 and 2 do in the afternoon. The responsive rule first charges 10, 41,
+  and 25 minutes ahead of the same crossings. It charges within one 300-second
+  update of the state entering the priced band (band crossings at 07:15 and
+  16:11 against first charges at 07:20 and 16:15), so the shortfall is in the
+  observability of the signal and not in controller latency. Against this, the
+  predetermined schedule charges all five zones for 60.0-62.5% of the priced
+  period including Zones 3 and 4, whose unpriced accumulation peaks at 0.42-0.47
+  and 0.28-0.34 of critical, whereas the responsive rule charges only Zones 1
+  and 2 and only for 31.2-48.3% of the period.
+- No existing calculation, output filename, scenario validation, or source
+  simulation was modified. The two new tables and the new figure are additive.
+
+## `studies/mt/create_hailing_pricing_chapter4_figures.py`
+
+### Reader-oriented Chapter 4 figure redesign
+
+- Updated 2026-08-31 +02:00 (Europe/Berlin). Simplified the hailing pricing
+  figures so each chart supports one result claim. The hailing-VKT response is
+  now a two-panel AM/PM comparison rather than a four-panel mixed mode/VKT
+  figure; the DDP feedback timeline separates accumulation and tariff rate on
+  aligned axes instead of using a secondary axis; and the rate-response figure
+  retains only critical duration and selected-cost change.
+- Replaced compact policy codes in figure labels with reader-facing policy
+  names, displayed zero critical duration as a dash in the spatial matrix, and
+  shortened trade-off labels to avoid overlap in thesis-sized output. The
+  underlying CSV calculations, source simulations, scenario validation, and
+  output filenames remain unchanged.
+
+## `studies/mt/create_hailing_pricing_chapter4_figures.py`
+
+### Reproducible hailing-only pricing and DDP rate-response analysis
+
+- Added 2026-08-31 +02:00 (Europe/Berlin). The script reads 14 completed AM/PM
+  capacity-one hailing runs covering Base, CTP, CDP, DTP, and three DDP rate
+  levels. It checks completion markers, request-ID cohorts, matched experiment
+  fields, dynamic-MFD operation, and the active tariff file without modifying
+  any simulation result.
+- It writes source provenance, configuration checks, policy outcomes, Base
+  deltas, mode shares, zonal congestion, network/tariff time series, tariff
+  activation, and DDP rate-response CSVs under
+  `studies/mt/results/mt/thesis_hailing_pricing`.
+- New diagnostics include the longest continuous critical episode, normalised
+  and absolute exceedance area, positive-PV-toll exposure, revenue per exposed
+  PV trip, and physical hailing VKT per selected request. Five title-free PNGs
+  cover spatial congestion, network--cost trade-offs, indirect hailing rebound,
+  the Zone 2 feedback timeline, and the three-level DDP response.
+- The active val3 configurations correctly load `munich_zone_tariff_val3.csv`,
+  although their internal `scenario_name` metadata still contains `val2`; the
+  script records this provenance warning and uses the active tariff file and
+  output data for all calculations.
+
+## `studies/mt/create_hailing_pooling_chapter4_figures.py`
+
+### Reproducible Chapter 4 hailing--pooling comparison
+
+- Added 2026-08-31 +02:00 (Europe/Berlin). The script reads completed morning
+  and afternoon hailing and pooling results, verifies identical request-ID
+  cohorts, matched demand and operator settings, equal 3,000-vehicle fleets,
+  effective MFD speed updates, and the absence of positive recorded tolls.
+- It writes matched-configuration, full mode-share, comparison-outcome, and
+  source-result CSV files under `studies/mt/results/mt/thesis_hailing_pooling`.
+  The outcomes include physical VKT per selected logical MoD request and total
+  passenger excess time so aggregate workload is separated from per-request
+  productivity and waiting is assessed together with in-vehicle excess.
+- It generates two title-free figures: an AM/PM mode-share comparison and a
+  joint VKT-per-request/passenger-time composition comparison. A second complete
+  generation produced identical SHA-256 hashes for both PNG files.
+
+## `studies/mt/create_static_dynamic_chapter4_figures.py`
+
+### Reproducible title-free static--dynamic Chapter 4 figures and tables
+
+- Added 2026-08-31 +02:00 (Europe/Berlin). The command-line script reads the
+  completed 1,500-vehicle morning dynamic-MFD and static result directories,
+  verifies identical request IDs and matched core configuration fields, and
+  never changes the source simulations.
+- It writes the matched configuration, common MFD diagnostic thresholds,
+  network summaries, zone-level congestion, mode shares, selected generalised
+  costs, MoD operational indicators, and the complete Zone 2 plotting series
+  as CSV files under `studies/mt/results/mt/thesis_static_dynamic`.
+- The two generated PNG files have no chart-internal titles. The network figure
+  compares accumulation and speeds actually used by the simulations and adds a
+  clearly identified post-processed MFD speed implied by the static load. The
+  mode-share figure uses representative request weights and reader-facing
+  scenario labels. A second complete generation produced identical SHA-256
+  hashes for both PNG files.
+- Extended the MoD operation output on 2026-08-31 with physical VKT per selected
+  logical MoD request. This normalisation distinguishes a reduction in total
+  fleet workload from a per-request efficiency improvement and is derived from
+  the same selected-request count and standard-evaluation VKT stored in the
+  output CSV.
+
+## `studies/mt/create_chapter4_overview_figures.py`
+
+### Title-free Chapter 4 overview figures
+
+- Updated 2026-08-31 +02:00 (Europe/Berlin). Removed all chart-internal titles
+  from the AM/PM distance-distribution figure and the paired OD heatmaps. The
+  information is retained in the thesis figure captions, while axes, legend,
+  colour bar, and numerical annotations remain unchanged.
+
+## `studies/mt/create_chapter4_overview_figures.py`
+
+### Reproducible Chapter 4 demand and OD overview figures
+
+- Added 2026-08-31 +02:00 (Europe/Berlin). The command-line script reads the
+  completed morning and afternoon reference `1_user-stats.csv` files together
+  with `node_zone_info.csv`; it never changes the simulation results.
+- It writes cohort, distance-band, aggregate-OD, and full OD-matrix CSV files,
+  plus combined AM/PM distance-distribution and OD heatmap PNGs. Logical and
+  representative quantities are kept separate, and an error is raised for
+  missing zone mappings, invalid weights, or undocumented distances above
+  100 km.
+- Matplotlib uses the non-interactive `Agg` backend so the figures can be
+  regenerated from a terminal without a working Tk installation. The thesis
+  snapshot was generated in `studies/mt/results/mt/thesis_overview` from the
+  completed 3,000-vehicle pooling reference results.
+
 ## `src/misc/globals.py`
 
 ### Representative request weight and MFD exogenous profile keys
@@ -357,6 +623,12 @@ additional source file.
   `metadata/time_of_day_pricing_windows.csv`; it includes the 15:30--18:30
   afternoon window even though the current 06:00--10:00 runs cannot display
   that non-overlapping period.
+- Updated 2026-08-27 +02:00 (Europe/Berlin). Comparisons whose reference
+  scenario has no `rp_tariff_schedule_file` now use an empty time-of-day
+  pricing-window table instead of validating tariff columns on an empty
+  schedule. This supports no-pricing baseline comparisons without adding
+  synthetic pricing backgrounds; configured tariff files retain strict column
+  validation.
 - Updated 2026-08-13 +02:00 (Europe/Berlin). Pricing outputs are recombined as
   one `pricing/zone_<id>` figure and CSV per zone: cordon charges use the left
   euro axis, while distance tariffs use the right euro-per-kilometre axis. The
@@ -1179,6 +1451,32 @@ of rerouted vehicles, refreshed plans, and retained infeasible plans.
   existing MFD speed-band thresholds and charge 0/1/2/4 EUR per kilometre for
   free/approaching/congested/severe traffic respectively; Zone 5 remains free.
 
+## `data/zones/mt/Aimsun_Munich_2020/munich_zone_tariff_val2.csv`
+
+### Higher-intensity MFD-responsive distance pricing
+
+- Added 2026-08-26 +02:00 (Europe/Berlin). Created a separately named copy of
+  `munich_zone_tariff_val1.csv` for DDP price-intensity sensitivity analysis.
+  All CTP, DTP, CDP, speed thresholds, time intervals, and Zone 5 rows remain
+  unchanged. Only the positive DDP rates for Zones 0--4 are increased by 50%:
+  approaching/congested/severe traffic now costs 1.5/3/6 EUR per kilometre
+  (`0.15/0.30/0.60` cent per metre); free traffic remains free.
+
+## `data/zones/mt/Aimsun_Munich_2020/munich_zone_tariff_val3.csv`
+
+### Twofold MFD-responsive distance-pricing intensity
+
+- Added 2026-08-30 +02:00 (Europe/Berlin) as a separately named copy of
+  `munich_zone_tariff_val1.csv` for the upper-bound DDP intensity experiment.
+  Only the 15 positive `distance,mfd_speed` rates in Zones 0--4 are doubled:
+  approaching/congested/severe traffic costs 2/4/8 EUR per kilometre
+  (`0.20/0.40/0.80` cent per metre). Free-state rows and Zone 5 remain free;
+  all non-DDP rows, time intervals, and MFD speed thresholds are unchanged.
+- Validated 126 total rows, 21 DDP rows, 15 intended changed fields, zero
+  unexpected differences, and exact twofold positive rates. The scheduled-
+  tariff loader recognized Zones 0--5 with Zone 5 free, and all 10 tests in
+  `tests.test_road_pricing` passed.
+
 ## `data/zones/mt/Aimsun_Munich_2020/zone_tariff.md`
 
 ### Human-readable `val1` tariff reference
@@ -1210,3 +1508,53 @@ of rerouted vehicles, refreshed plans, and retained infeasible plans.
   static/no-pricing behavior with no exogenous profile.
 - Munich analysis resolves the configured MFD parameter file in dynamic mode
   and omits MFD congestion thresholds for static result configurations.
+
+## `studies/mt/summary_metrics.py`
+
+### Reusable result-KPI extraction
+
+- Added 2026-08-30 +02:00 (Europe/Berlin). Centralizes the definitions and
+  extraction of thesis-result KPIs: critical-accumulation duration and peak
+  accumulation ratio, request-weighted selected generalized cost and mode
+  shares, PV toll and MoD fare payments, and physical MoD fleet indicators
+  from `standard_eval.csv`.
+- Dynamic results derive each zone's critical accumulation from the configured
+  MFD parameters. Static results have no intrinsic MFD threshold; in a
+  static--dynamic comparison the dynamic reference thresholds are therefore
+  used solely as a common diagnostic benchmark. Equivalent request weights are
+  used only for user-side quantities, never for physical vehicle operations.
+
+## `studies/mt/function_analyse/plot_kpi_summary.py` and `plot_all_metrics.py`
+
+### Single-scenario KPI summary
+
+- Added 2026-08-30 +02:00 (Europe/Berlin). `plot_kpi_summary.py` writes
+  `analysis/kpi_summary/` with machine-readable overview, zone-level
+  congestion, availability, and metric-definition CSVs plus compact network,
+  user/payment, and MoD-operation figures.
+- `plot_all_metrics.py` now invokes this as its fifth standard analysis, so one
+  command produces the existing demand, MFD, operations, welfare, and new KPI
+  summary categories. `--include-zone-5` is passed through consistently.
+
+## `studies/mt/function_compare/plot_compare.py`
+
+### Comparable congestion, welfare, and operating-result categories
+
+- Updated 2026-08-30 +02:00 (Europe/Berlin). Every regular comparison now also
+  creates `summary/`, `congestion/`, `user_outcomes/`, and `mod_operations/`.
+  These contain reusable CSVs and figures for network critical duration/peak
+  loading, selected generalized cost and pricing exposure/revenue, zone-level
+  critical duration, and physical MoD VKT, waiting, detour, occupancy, empty
+  VKT, utilization, and shared-rides rate.
+- Added `--summary-only` to regenerate only these cross-scenario KPI categories
+  from metadata-defined scenario groups, without overwriting or repeating the
+  legacy time-series and distribution outputs. On 2026-08-30, this mode was
+  applied successfully to all 29 existing result groups under
+  `studies/mt/results/mt/`.
+- Updated 2026-08-30 +02:00 (Europe/Berlin). Cost-sensitive figure categories
+  (`pricing/`, `generalized_cost/`, and `user_outcomes/`) are now generated
+  only when at least one selected PV trip has a positive recorded
+  `included_toll`. This result-based condition avoids showing road-pricing or
+  generalized-cost figures for base-vs-base service, MoD-share, or
+  static-vs-MFD comparisons, while retaining them for comparisons with actual
+  policy charges.

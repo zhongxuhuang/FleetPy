@@ -314,6 +314,22 @@ class NetworkZoneSystem(ZoneSystem):
             return None
         return max(float(number_vehicles), 0.0) / network_length_km
 
+    def get_mfd_critical_accumulation(self, zone_id):
+        """Return the parabolic-MFD critical accumulation for ``zone_id``.
+
+        For ``q(k) = v * k - gamma * k**2``, the maximum-flow density is
+        ``v / (2 * gamma)``. Multiplication by the directed zone network
+        length converts this density in vehicles per kilometre to the vehicle
+        accumulation used by the routing engine. Zones without an MFD or a
+        valid assigned network length return ``None``.
+        """
+        parameters = self.mfd_parameters.get(zone_id)
+        network_length_km = self.mfd_network_lengths_km.get(zone_id)
+        if parameters is None or network_length_km is None:
+            return None
+        critical_density = parameters["v"] / (2.0 * parameters["gamma"])
+        return critical_density * network_length_km
+
     def get_mfd_exogenous_density(self, zone_id, simulation_time):
         """Return the linearly interpolated fixed exogenous density in veh/km."""
         profile = self.mfd_exogenous_density_profiles.get(zone_id)
