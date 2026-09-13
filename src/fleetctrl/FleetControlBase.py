@@ -609,7 +609,7 @@ class FleetControlBase(metaclass=ABCMeta):
         prq.set_soft_do_constraints(new_soft_lpt, new_soft_ept)
 
     def _estimate_request_road_toll(self, sim_time : int, prq : PlanRequest) -> int:
-        """Estimate the user-facing road toll for a request in cent.
+        """This method estimates the user-facing road toll for a request in cent.
 
         The first implementation uses the best direct passenger route. The returned toll can be added to the
         user-facing fare while remaining available as a separate output component.

@@ -101,10 +101,8 @@ class Demand:
         number_valid_trips = future_requests.shape[0]
         future_requests[G_RQ_TIME] = future_requests[G_RQ_TIME] - np.mod(future_requests[G_RQ_TIME],
                                                                          simulation_time_step)
-        # A demand file can optionally mark background traffic with rq_pv == 1.
-        # By default every valid row passes through the configured traveler /
-        # mode-choice model. Scenarios can set rq_pv_as_background to True to
-        # retain fixed-background-PV behavior for those rows.
+        # optionally treat demand rows marked with rq_pv == 1 as background traffic
+        # by default, every valid row passes through the configured traveler / mode-choice model
         rq_pv_as_background = self.scenario_parameters.get("rq_pv_as_background", False)
         if rq_pv_as_background and "rq_pv" in future_requests.columns:
             background_mask = pd.to_numeric(future_requests["rq_pv"], errors="coerce").eq(1)
@@ -247,7 +245,8 @@ class Demand:
         return list_new_traveler_rid_obj
 
     def get_new_background_trips(self, simulation_time, *, since=None):
-        """Return background trips becoming active in the current simulation interval."""
+        """This method returns background trips becoming active in the current simulation interval.
+        """
         since = since if since is not None else simulation_time - 1
         new_background_trips = []
         for t in range(since + 1, simulation_time + 1):

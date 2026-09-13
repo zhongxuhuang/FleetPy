@@ -49,13 +49,12 @@ class NetworkZoneSystem(ZoneSystem):
         self.mfd_exogenous_density_profiles = self._load_mfd_exogenous_density_profiles(
             scenario_parameters
         )
-        # Filled by the routing engine once it has assigned network edges to
-        # zones. The fitted MFDs use density [veh/km], whereas FleetPy tracks
-        # an absolute vehicle count per zone.
+        # filled by the routing engine after assigning network edges to zones
+        # fitted MFDs use density [veh/km], whereas FleetPy tracks absolute vehicle counts per zone
         self.mfd_network_lengths_km = {}
 
     def _load_mfd_parameters(self, scenario_parameters):
-        """Load the configured parabolic MFD parameters for dynamic mode.
+        """This method loads the configured parabolic MFD parameters for dynamic mode.
 
         The file is resolved relative to the general zone directory and must
         contain ``zone_id``,
@@ -153,7 +152,7 @@ class NetworkZoneSystem(ZoneSystem):
         }
 
     def _load_mfd_exogenous_density_profiles(self, scenario_parameters):
-        """Load optional time-varying exogenous MFD densities.
+        """This method loads optional time-varying exogenous MFD densities.
 
         The configured file is resolved relative to the network-specific zone
         directory. It contains final densities in veh/km; the reference and
@@ -293,7 +292,7 @@ class NetworkZoneSystem(ZoneSystem):
         return profiles
 
     def set_mfd_network_lengths(self, network_lengths_km):
-        """Set zone road lengths used to convert vehicle counts to density.
+        """This method sets zone road lengths used to convert vehicle counts to density.
 
         :param network_lengths_km: mapping of zone id to assigned directed
             road length in kilometres
@@ -306,7 +305,8 @@ class NetworkZoneSystem(ZoneSystem):
         }
 
     def get_mfd_density(self, zone_id, number_vehicles):
-        """Return the density used by the MFD, or ``None`` when unavailable."""
+        """This method returns the density used by the MFD, or ``None`` when unavailable.
+        """
         if zone_id not in self.mfd_parameters:
             return None
         network_length_km = self.mfd_network_lengths_km.get(zone_id)
@@ -315,7 +315,7 @@ class NetworkZoneSystem(ZoneSystem):
         return max(float(number_vehicles), 0.0) / network_length_km
 
     def get_mfd_critical_accumulation(self, zone_id):
-        """Return the parabolic-MFD critical accumulation for ``zone_id``.
+        """This method returns the parabolic-MFD critical accumulation for ``zone_id``.
 
         For ``q(k) = v * k - gamma * k**2``, the maximum-flow density is
         ``v / (2 * gamma)``. Multiplication by the directed zone network
@@ -331,7 +331,8 @@ class NetworkZoneSystem(ZoneSystem):
         return critical_density * network_length_km
 
     def get_mfd_exogenous_density(self, zone_id, simulation_time):
-        """Return the linearly interpolated fixed exogenous density in veh/km."""
+        """This method returns the linearly interpolated fixed exogenous density in veh/km.
+        """
         profile = self.mfd_exogenous_density_profiles.get(zone_id)
         if profile is None:
             return 0.0
@@ -342,14 +343,15 @@ class NetworkZoneSystem(ZoneSystem):
         ))
 
     def get_mfd_exogenous_vehicle_count(self, zone_id, simulation_time):
-        """Convert a zone's exogenous density to an equivalent vehicle count."""
+        """This method converts a zone's exogenous density to an equivalent vehicle count.
+        """
         network_length_km = self.mfd_network_lengths_km.get(zone_id)
         if network_length_km is None:
             return 0.0
         return self.get_mfd_exogenous_density(zone_id, simulation_time) * network_length_km
 
     def get_mfd_average_speed(self, zone_id, number_vehicles):
-        """Return the configured MFD average speed in m/s.
+        """This method returns the configured MFD average speed in m/s.
 
         The routing engine provides a total zone vehicle count. It is converted
         to density using the assigned zone road length, then the fitted
@@ -409,7 +411,7 @@ class NetworkZoneSystem(ZoneSystem):
         self.current_toll_cost_scale = general_toll_cost
 
     def set_current_toll_coefficients(self, toll_coefficients):
-        """Sets direct zone toll coefficients in cent per meter.
+        """This method sets direct zone toll coefficients in cent per meter.
 
         :param toll_coefficients: zone id -> cent per meter
         :type toll_coefficients: dict
@@ -421,7 +423,8 @@ class NetworkZoneSystem(ZoneSystem):
                 self.current_toll_coefficients[k] = float(v)
 
     def set_road_pricing_policy(self, policy):
-        """Register the active policy for PV-only tariff quotations."""
+        """This method registers the active policy for PV-only tariff quotations.
+        """
         self.road_pricing_policy = policy
 
     def set_current_toll_costs(self, use_pre_defined_zone_scales=False, rel_toll_cost_dict={}):
@@ -486,14 +489,16 @@ class NetworkZoneSystem(ZoneSystem):
         return external_pv_costs, toll_costs, park_costs
 
     def get_route_toll_cost(self, routing_engine, sim_time, route):
-        """Returns only the route-based toll costs in cent."""
+        """This method returns only the route-based toll costs in cent.
+        """
         _, toll_costs, _ = self.get_external_route_costs(
             routing_engine, sim_time, route, park_origin=False, park_destination=False
         )
         return toll_costs
 
     def get_pv_route_toll_cost(self, routing_engine, sim_time, route):
-        """Return the PV tariff while leaving generic MoD route tolls unchanged."""
+        """This method returns the PV tariff while leaving generic MoD route tolls unchanged.
+        """
         policy_toll = getattr(self.road_pricing_policy, "get_pv_route_toll_cost", None)
         if callable(policy_toll):
             return policy_toll(routing_engine, sim_time, route)

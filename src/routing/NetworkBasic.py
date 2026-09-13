@@ -176,8 +176,8 @@ class NetworkBasic(NetworkBase):
         self._current_tt_factor = None
         self.travel_time_file_infos = self._load_tt_folder_path(network_dynamics_file_name=network_dynamics_file_name)
         self.loadNetwork(network_name_dir, network_dynamics_file_name=network_dynamics_file_name, scenario_time=scenario_time)
-        # Dynamic MFD updates only overwrite travel times for zones that provide
-        # an MFD speed. All other edges retain their loaded travel times.
+        # dynamic MFD updates only overwrite travel times for zones that provide an MFD speed
+        # all other edges retain their loaded travel times
         self.current_dijkstra_number = 1    #used in dijkstra-class
         self.sim_time = 0   # TODO #
         self.zones = None   # TODO #
@@ -190,16 +190,14 @@ class NetworkBasic(NetworkBase):
         self.zone_mfd_functions = {}
         self._zone_to_edge_cache = None
         self._zone_to_edge_cache_zones_id = None
-        # Zones without an MFD still need a positive speed for the PV bathtub
-        # queue. These speeds are calculated once from the t=0 edge travel
-        # times when the zone-edge cache is first built.
+        # zones without an MFD still need a positive speed for the PV bathtub queue
+        # calculate these speeds once from the t=0 edge travel times when building the zone-edge cache
         self._fixed_zone_queue_speeds = {}
         self._zone_priority_queue_states = {}
         self._queued_route_trips = {}
         self._pv_route_start_events = []
         self._priority_queue_sequence = 0
-        # One row per simulation time and zone, exported once the result
-        # directory is available in FleetSimulationBase.
+        # one row per simulation time and zone, exported when FleetSimulationBase provides the result directory
         self._zone_speed_time_series = []
         with open(os.sep.join([self.network_name_dir, "base","crs.info"]), "r") as f:
             self.crs = f.read()
@@ -208,7 +206,7 @@ class NetworkBasic(NetworkBase):
         )
 
     def set_network_mode(self, network_mode):
-        """Configure whether zone state updates may overwrite edge travel times.
+        """This method configures whether zone state updates may overwrite edge travel times.
 
         Static mode must be selected before the first network update. It keeps
         the base edge travel times loaded by ``loadNetwork`` and disables both
@@ -310,7 +308,8 @@ class NetworkBasic(NetworkBase):
         return new_tt_flag
 
     def _update_static_network_state(self, simulation_time):
-        """Update traffic counts and audit speeds without changing any edge TT."""
+        """This method updates traffic counts and audit speeds without changing any edge TT.
+        """
         zone_to_edges = self._get_zone_to_edge_cache()
         if not zone_to_edges:
             return False
@@ -333,7 +332,7 @@ class NetworkBasic(NetworkBase):
         return False
 
     def _update_dynamic_edge_travel_times(self, simulation_time):
-        """Updates edge travel times from zone MFD speeds.
+        """This method updates edge travel times from zone MFD speeds.
 
         :param simulation_time: current simulation time of the dynamic update
         :return: True if at least one edge travel time was updated
@@ -345,8 +344,8 @@ class NetworkBasic(NetworkBase):
                 f"(zones_attached={self.zones is not None})"
             )
             return False
-        # Building the zone-edge cache also supplies the MFD network lengths
-        # needed to convert exogenous density to equivalent vehicle counts.
+        # building the zone-edge cache also supplies the MFD network lengths
+        # needed to convert exogenous density to equivalent vehicle counts
         self._update_current_zone_vehicle_counts(simulation_time)
 
         changed_edges = []
@@ -396,7 +395,8 @@ class NetworkBasic(NetworkBase):
         return False
 
     def _record_zone_speed_snapshot(self, simulation_time, zone_speed_summary):
-        """Store the current MFD speed of every mapped zone for result export."""
+        """This method stores the current MFD speed of every mapped zone for result export.
+        """
         self._zone_speed_time_series = [
             record for record in self._zone_speed_time_series
             if record["simulation_time"] != simulation_time
@@ -417,7 +417,7 @@ class NetworkBasic(NetworkBase):
             })
 
     def get_current_zone_mfd_speeds(self):
-        """Return the latest MFD average speed per zone in network units per second.
+        """This method returns the latest MFD average speed per zone in network units per second.
 
         The values are the same speeds most recently used to update the zone's
         edge travel times.  Consumers such as road-pricing policies can use
@@ -431,7 +431,7 @@ class NetworkBasic(NetworkBase):
         }
 
     def get_current_zone_vehicle_counts(self):
-        """Return a snapshot of total current vehicle counts by zone.
+        """This method returns a snapshot of total current vehicle counts by zone.
 
         The count combines weighted active PV route segments, weighted moving
         MoD vehicles, and fixed exogenous equivalent counts. Callers receive a
@@ -441,7 +441,7 @@ class NetworkBasic(NetworkBase):
         return self.current_total_zone_vehicle_counts.copy()
 
     def write_zone_speed_timeseries(self, output_file):
-        """Write recorded zone MFD speeds to a result CSV.
+        """This method writes recorded zone MFD speeds to a result CSV.
 
         :param output_file: absolute path of ``zone_speed_timeseries.csv``
         :return: True when a CSV was written, otherwise False
@@ -454,7 +454,7 @@ class NetworkBasic(NetworkBase):
         return True
 
     def _after_dynamic_edge_tt_update(self, changed_edges):
-        """Runs backend-specific updates after dynamic edge travel times changed.
+        """This method runs backend-specific updates after dynamic edge travel times changed.
 
         :param changed_edges: list of tuples containing start node, end node and new travel time
         :return: None
@@ -462,11 +462,12 @@ class NetworkBasic(NetworkBase):
         pass
 
     def _get_edge_distance(self, o_node_index, d_node_index):
-        """Returns an edge distance without reading its (possibly dynamic) TT."""
+        """This method returns an edge distance without reading its possibly dynamic TT.
+        """
         return self.nodes[o_node_index].edges_to[self.nodes[d_node_index]].get_distance()
 
     def _get_zone_to_edge_cache(self):
-        """Builds a zone-to-edge cache for periodic MFD edge travel-time updates.
+        """This method builds a zone-to-edge cache for periodic MFD edge travel-time updates.
 
         :return: dictionary zone_id -> list of edge information tuples
         """
@@ -487,7 +488,7 @@ class NetworkBasic(NetworkBase):
         self._zone_to_edge_cache_zones_id = id(self.zones)
         self._fixed_zone_queue_speeds = self._compute_fixed_zone_queue_speeds(zone_to_edges)
         if hasattr(self.zones, "set_mfd_network_lengths"):
-            # Edge distances are in metres. MFD fits use density in veh/km.
+            # edge distances are in metres, while MFD fits use density in veh/km
             self.zones.set_mfd_network_lengths({
                 zone_id: sum(edge_distance for _, _, edge_distance in edge_infos) / 1000.0
                 for zone_id, edge_infos in zone_to_edges.items()
@@ -495,7 +496,7 @@ class NetworkBasic(NetworkBase):
         return self._zone_to_edge_cache
 
     def _compute_fixed_zone_queue_speeds(self, zone_to_edges):
-        """Return t=0 base-TT-equivalent speeds for zones without an MFD.
+        """This method returns t=0 base-TT-equivalent speeds for zones without an MFD.
 
         The returned speed is ``sum(distance) / sum(edge_tt)`` in network
         distance units per second.  It is only used to advance the zone-level
@@ -576,7 +577,7 @@ class NetworkBasic(NetworkBase):
         return [n.node_index for n in self.nodes if n.must_stop()]
 
     def _get_zone_priority_queue_state(self, zone_id, simulation_time=None):
-        """Returns the priority queue state of a zone.
+        """This method returns the priority queue state of a zone.
 
         If no state exists for the given zone yet, it is initialized empty with
         the zone-specific queue speed.
@@ -605,7 +606,7 @@ class NetworkBasic(NetworkBase):
         return self._zone_priority_queue_states[zone_id]
 
     def _log_zone_priority_queue_state(self, zone_id, event, simulation_time=None, extra=None):
-        """Logs a compact snapshot of one zone's PV priority queue state.
+        """This method logs a compact snapshot of one zone's PV priority queue state.
 
         :param zone_id: zone identifier whose state is logged
         :param event: short label describing the state transition or log reason
@@ -635,7 +636,7 @@ class NetworkBasic(NetworkBase):
         LOG.debug(log_msg)
 
     def _advance_zone_priority_queue_state(self, zone_id, simulation_time):
-        """Advances the PV priority queue bathtub state of one zone.
+        """This method advances the PV priority queue bathtub state of one zone.
 
         The state is advanced from its last update time to the given simulation
         time. All PV trips whose completion threshold is reached are removed from
@@ -687,7 +688,7 @@ class NetworkBasic(NetworkBase):
         return completed
 
     def _set_pv_zone_vehicle_count_from_priority_queue(self, zone_id):
-        """Updates the stored PV count from active priority-queue trips.
+        """This method updates the stored PV count from active priority-queue trips.
 
         :param zone_id: zone identifier whose PV vehicle count is updated
         :return: None
@@ -701,16 +702,18 @@ class NetworkBasic(NetworkBase):
 
     @staticmethod
     def _get_zone_priority_queue_active_count(state):
-        """Returns the active equivalent PV weight in a zone priority queue."""
+        """This method returns the active equivalent PV weight in a zone priority queue.
+        """
         return max(state["E"] - state["G"], 0)
 
     @staticmethod
     def _get_zone_priority_queue_sampled_active_count(state):
-        """Returns the number of logical sampled PV trips in a zone queue."""
+        """This method returns the number of logical sampled PV trips in a zone queue.
+        """
         return max(state["sample_E"] - state["sample_G"], 0)
 
     def _update_zone_priority_queue_speeds(self):
-        """Refreshes PV priority queue speeds using total zone vehicle counts.
+        """This method refreshes PV priority queue speeds using total zone vehicle counts.
 
         :return: None
         """
@@ -721,7 +724,7 @@ class NetworkBasic(NetworkBase):
                 state["v"] = avg_speed
 
     def _register_zone_trip(self, zone_id, start_time, travel_distance, vehicle_weight=1.0, trip_id=None):
-        """Register one weighted logical PV trip in a zone bathtub queue.
+        """This method registers one weighted logical PV trip in a zone bathtub queue.
 
         Each registered trip receives a completion threshold based on the current
         bathtub progress and the remaining travel distance in the zone.
@@ -783,7 +786,8 @@ class NetworkBasic(NetworkBase):
         )
 
     def _build_route_zone_segments(self, route):
-        """Builds ordered contiguous zone segments using edge distances only."""
+        """This method builds ordered contiguous zone segments using edge distances only.
+        """
         segments = []
         for i in range(len(route) - 1):
             o_node, d_node = route[i], route[i + 1]
@@ -802,7 +806,8 @@ class NetworkBasic(NetworkBase):
         return segments
 
     def _schedule_pv_route_trip(self, segments, start_time, vehicle_weight=1.0):
-        """Add one weighted PV route descriptor to the start-event queue."""
+        """This method adds one weighted PV route descriptor to the start-event queue.
+        """
         self._priority_queue_sequence += 1
         trip_id = self._priority_queue_sequence
         self._queued_route_trips[trip_id] = {
@@ -814,7 +819,8 @@ class NetworkBasic(NetworkBase):
         heapq.heappush(self._pv_route_start_events, (start_time, self._priority_queue_sequence, trip_id))
 
     def _admit_scheduled_pv_route_trips(self, simulation_time):
-        """Moves due PV route descriptors into their first zone queue segment."""
+        """This method moves due PV route descriptors into their first zone queue segment.
+        """
         while self._pv_route_start_events and self._pv_route_start_events[0][0] <= simulation_time:
             _, _, trip_id = heapq.heappop(self._pv_route_start_events)
             trip = self._queued_route_trips.get(trip_id)
@@ -830,7 +836,8 @@ class NetworkBasic(NetworkBase):
             )
 
     def _continue_pv_route_trip(self, trip_id, simulation_time):
-        """Moves a completed PV segment into its next zone queue segment."""
+        """This method moves a completed PV segment into its next zone queue segment.
+        """
         trip = self._queued_route_trips.get(trip_id)
         if trip is None:
             return
@@ -848,7 +855,7 @@ class NetworkBasic(NetworkBase):
         )
 
     def _update_current_zone_vehicle_counts(self, simulation_time):
-        """Updates PV queue counts and combines them with synced MoD positions.
+        """This method updates PV queue counts and combines them with synced MoD positions.
 
         :param simulation_time: simulation time for which the zone counts are updated
         :return: dictionary zone_id -> total number of vehicles in this zone
@@ -866,7 +873,7 @@ class NetworkBasic(NetworkBase):
         return self.current_total_zone_vehicle_counts
 
     def update_mod_zone_vehicle_counts(self, mod_positions, vehicle_weight=1.0):
-        """Rebuilds moving-MoD zone counts from their current network positions.
+        """This method rebuilds moving-MoD zone counts from their current network positions.
 
         MoD vehicles are deliberately not represented in the priority queue.
         Call this after vehicle states have been advanced and before the next
@@ -903,7 +910,8 @@ class NetworkBasic(NetworkBase):
         return self.current_mod_zone_vehicle_counts
 
     def _update_exogenous_zone_vehicle_counts(self, simulation_time=None):
-        """Refresh fixed exogenous equivalent counts from zone density curves."""
+        """This method refreshes fixed exogenous equivalent counts from zone density curves.
+        """
         if simulation_time is None:
             simulation_time = self.sim_time
         exogenous_getter = getattr(self.zones, "get_mfd_exogenous_vehicle_count", None)
@@ -916,7 +924,8 @@ class NetworkBasic(NetworkBase):
         }
 
     def _refresh_total_zone_vehicle_counts(self, simulation_time=None):
-        """Combine weighted PV/MoD and fixed exogenous counts per zone."""
+        """This method combines weighted PV/MoD and fixed exogenous counts per zone.
+        """
         self._update_exogenous_zone_vehicle_counts(simulation_time)
         all_zone_ids = (
             set(self._get_defined_zones())
@@ -935,7 +944,7 @@ class NetworkBasic(NetworkBase):
         }
 
     def _get_zone_average_speed_from_mfd(self, zone_id, number_vehicles):
-        """Placeholder for zone MFD equations.
+        """This method is a placeholder for zone MFD equations.
 
         Expected return unit is distance unit per second, matching edge distance / travel time.
         Return None to keep using the network's original edge travel time.
@@ -948,14 +957,14 @@ class NetworkBasic(NetworkBase):
             return None
         if zone_id in self.zone_mfd_functions:
             return self.zone_mfd_functions[zone_id](number_vehicles)
-        # TODO: the default MFD speed should be implemented in the attached ZoneSystem
-        # via get_mfd_average_speed(zone_id, number_vehicles).
+        # TODO # implement the default MFD speed in the attached ZoneSystem
+        # via get_mfd_average_speed(zone_id, number_vehicles)
         if self.zones is not None and hasattr(self.zones, "get_mfd_average_speed"):
             return self.zones.get_mfd_average_speed(zone_id, number_vehicles)
         return None
 
     def _get_zone_queue_speed(self, zone_id, number_vehicles):
-        """Return the speed used to advance a zone-level PV queue.
+        """This method returns the speed used to advance a zone-level PV queue.
 
         MFD zones use their density-dependent speed. Zones without an MFD use
         their cached t=0 base-edge-TT-equivalent speed, so their PV queue can
@@ -970,7 +979,7 @@ class NetworkBasic(NetworkBase):
         return self._fixed_zone_queue_speeds.get(zone_id)
 
     def set_zone_mfd_function(self, zone_id, mfd_function):
-        """Registers an MFD function for one zone.
+        """This method registers an MFD function for one zone.
 
         :param zone_id: zone identifier for which the MFD function is registered
         :param mfd_function: callable mapping number_vehicles to average zone speed
@@ -985,7 +994,7 @@ class NetworkBasic(NetworkBase):
                 state["v"] = avg_speed
 
     def _get_mfd_section_infos(self, start_node_index, end_node_index):
-        """Returns edge travel time and distance using zone MFD speed when available.
+        """This method returns edge travel time and distance using zone MFD speed when available.
 
         :param start_node_index: index of the edge start node
         :param end_node_index: index of the edge end node
@@ -1008,7 +1017,7 @@ class NetworkBasic(NetworkBase):
         return dynamic_tt, edge_distance
 
     def _get_defined_zones(self):
-        """Returns currently known zone identifiers.
+        """This method returns currently known zone identifiers.
 
         :return: list of currently defined zone identifiers
         """
@@ -1021,7 +1030,7 @@ class NetworkBasic(NetworkBase):
         return list(self.zones)
 
     def _get_zone_from_position(self, position):
-        """Returns the zone identifier for a network position.
+        """This method returns the zone identifier for a network position.
 
         :param position: network position tuple for which the zone is requested
         :return: zone identifier of the position or None if no zone is available
@@ -1104,7 +1113,7 @@ class NetworkBasic(NetworkBase):
         return (arrival_time, distance)
 
     def assign_route_to_network(self, route, start_time, end_time, number_vehicles=1):
-        """Schedules PV routes in the shared zone priority queues.
+        """This method schedules PV routes in the shared zone priority queues.
 
         :param route: list of nodes
         :param start_time: simulation time at which the PV route starts

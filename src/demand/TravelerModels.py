@@ -359,7 +359,8 @@ class BasicRequest(RequestBase):
 # -------------------------------------------------------------------------------------------------------------------- #
 
 class BasicRequestDeclineToPV(BasicRequest):
-    """Test request model: use PV whenever all MoD operators decline service."""
+    """This test request model selects PV whenever all MoD operators decline service.
+    """
     type = "BasicRequestDeclineToPV"
 
     def choose_offer(self, sc_parameters, simulation_time):
@@ -707,9 +708,7 @@ class UserUtilityRequest(RequestBase):
         self.chosen_operator_id = selected_op
         return self.chosen_operator_id
 
-# ---------------------------------------------------------------------------
-# New Request: PTUtilityRequest
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------------------------- #
 
 INPUT_PARAMETERS_PTUtilityRequest = {
     "doc": "Compute a simple PT utility from demand column tt_pt (minutes): ASC_PT - alpha * tt_pt",
@@ -721,22 +720,22 @@ INPUT_PARAMETERS_PTUtilityRequest = {
 }
 
 class PTUtilityRequest(RequestBase):
-    """Request that pre-computes a public transport (PT) utility for the request and uses max utility model to choose
+    """This request pre-computes a public transport (PT) utility and uses a maximum utility model to choose
     between PT and MOD.
 
-    The demand files have to have a column ''
+    The demand file must contain a ``tt_pt`` column.
     """
     type = "PTUtilityRequest"
 
     def __init__(self, rq_row, routing_engine, simulation_time_step, scenario_parameters):
         super().__init__(rq_row, routing_engine, simulation_time_step, scenario_parameters)
-        # tt_pt is the PT travel time in minutes in the demand schema.
+        # tt_pt is the PT travel time in minutes in the demand schema
         pt_travel_time = rq_row.get('tt_pt', None)
         if pt_travel_time is None:
             raise KeyError("Missing data column 'tt_pt' in request file!")
 
-        # Scenario parameter keys: try a few reasonable names, but require them to be present (no defaults)
-        # PT ASC: base PT utility
+        # try the supported scenario parameter keys and require an explicit value
+        # base PT utility
         pt_asc = None
         pt_asc_keys = [G_MC_ASC_PT]
         for key in pt_asc_keys:
@@ -747,7 +746,7 @@ class PTUtilityRequest(RequestBase):
             raise KeyError(
                 f"Missing required scenario parameter for PT ASC. Set '{G_MC_ASC_PT}' in the scenario configuration.")
 
-        # alpha: per-minute penalty for PT travel time
+        # per-minute penalty for PT travel time
         alpha_t_p = None
         alpha_keys = ['alpha_t_P']
         for key in alpha_keys:
@@ -763,13 +762,14 @@ class PTUtilityRequest(RequestBase):
         self.pt_utility: float = float(pt_asc) - float(alpha_t_p) * float(pt_travel_time)
 
 
-        # set MOD sensitivity coefficients (considering units: in config per min, from FleetPy in seconds)
+        # set MOD sensitivity coefficients (configuration per minute, FleetPy input in seconds)
         self.alpha_t_d: float = scenario_parameters["alpha_t_D"] / 60
         self.alpha_t_w: float = scenario_parameters["alpha_t_W"] / 60
-        self.fare_conversion: float = 1/100 # convert fare from cents to euros for utility calculation
+        self.fare_conversion: float = 1/100  # convert fare from cents to euros for utility calculation
 
     def choose_offer(self, scenario_parameters, simulation_time):
-        """Use a max utility model to choose between MOD providers and PT"""
+        """This method uses a maximum utility model to choose between MOD providers and PT.
+        """
         selected_op = -1
         highest_utility = self.pt_utility
         for op_id, offer in self.offer.items():
@@ -791,14 +791,12 @@ class PTUtilityRequest(RequestBase):
             self.toll = chosen_offer.get(G_OFFER_TOLL, 0)
         return selected_op
 
-    # Optionally override record_data to include the PT utility in output
+    # add the PT utility to the request output
     def _add_record(self, record_dict):
         record_dict['pt_utility'] = self.pt_utility
         record_dict['highest_mod_utility'] = self.highest_mod_utility
 
-# ---------------------------------------------------------------------------
-# New Request: MultinomialLogitRequest
-# ---------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------------------------- #
 
 INPUT_PARAMETERS_MultinomialLogitRequest = {
     "doc": "Uses a multinomial logit model to determine the selected choice. "
@@ -813,7 +811,7 @@ INPUT_PARAMETERS_MultinomialLogitRequest = {
 
 
 class MultinomialLogitRequest(RequestBase):
-    """Request that uses a multinomial logit model to choose between alternatives.
+    """This request uses a multinomial logit model to choose between alternatives.
 
     The demand files can have columns for agent-specific coefficients,
     or can fall back to scenario-specific coefficients.
@@ -876,14 +874,16 @@ class MultinomialLogitRequest(RequestBase):
         return None
 
     def _get_mode_choice_asc(self, mode_name):
-        """Return the configured global ASC for one mode, or zero when omitted."""
+        """This method returns the configured global ASC for one mode, or zero when omitted.
+        """
         if mode_name not in self._MODE_CHOICE_ASC_KEYS:
             raise KeyError(f"Unknown mode-choice ASC mode '{mode_name}'.")
         scalar_asc = self.mc_pars.get(self._MODE_CHOICE_ASC_KEYS[mode_name])
         return 0.0 if scalar_asc is None else float(scalar_asc)
 
     def _apply_precomputed_direct_route_infos(self):
-        """Use precomputed PV/direct route attributes from the demand row if available."""
+        """This method uses precomputed PV/direct-route attributes from the demand row if available.
+        """
         direct_time = self._get_first_valid_row_value([G_RQ_DRT, "pv_travel_time", "pv_tt"])
         if direct_time is not None:
             self.direct_route_travel_time = float(direct_time)
@@ -907,7 +907,8 @@ class MultinomialLogitRequest(RequestBase):
         return int(pv_toll_getter(self.routing_engine, simulation_time, route))
 
     def _compute_external_mode_utilities(self, simulation_time):
-        """Compute utilities for non-MOD modes that are always available to the traveller."""
+        """This method computes utilities for non-MOD modes that are always available to the traveller.
+        """
         utils = {}
         beta_time = float(self.mc_pars[G_MC_BETA_TIME])
         beta_money = float(self.mc_pars[G_MC_BETA_MONEY])
@@ -942,9 +943,9 @@ class MultinomialLogitRequest(RequestBase):
         return utils
 
     def _compute_pt_utility(self, scenario_parameters):
-        """Compute PT utility if PT data is already attached to the request.
+        """This method computes the PT utility if PT data is already attached to the request.
 
-        TODO: PT travel time is not generated here; add tt_pt or pt_utility
+        PT travel time is not generated here; add ``tt_pt`` or ``pt_utility``
         to the demand file/preprocessing later to activate PT in this MNL choice set.
         """
         pt_utility = self.rq_row.get('pt_utility', None)
@@ -959,7 +960,7 @@ class MultinomialLogitRequest(RequestBase):
 
         beta_time = float(self.mc_pars[G_MC_BETA_TIME])
         beta_money = float(self.mc_pars[G_MC_BETA_MONEY])
-        # tt_pt is stored in minutes while all other time inputs are seconds.
+        # tt_pt is stored in minutes while all other time inputs are seconds
         utility = float(pt_intercept) - beta_time * float(pt_travel_time) * 60
         pt_fare = scenario_parameters.get(G_PT_FARE_B, 0)
         if self._is_valid_parameter_value(pt_fare):
@@ -971,7 +972,8 @@ class MultinomialLogitRequest(RequestBase):
         return {G_MC_DEC_PT: utility}
 
     def _compute_mod_offer_utilities(self):
-        """Compute utilities for non-declined MOD offers."""
+        """This method computes utilities for non-declined MOD offers.
+        """
         utils = {}
         beta_time = float(self.mc_pars[G_MC_BETA_TIME])
         beta_money = float(self.mc_pars[G_MC_BETA_MONEY])
@@ -996,7 +998,8 @@ class MultinomialLogitRequest(RequestBase):
         return {mode: exp_utility / exp_sum for mode, exp_utility in exp_utilities.items()}
 
     def _get_selected_mode_travel_time(self):
-        """Return the selected alternative's time input in seconds, when available."""
+        """This method returns the selected alternative's time input in seconds, when available.
+        """
         if self.chosen_operator_id == G_MC_DEC_PV:
             return self.direct_route_travel_time
         if self.chosen_operator_id == G_MC_DEC_WALK:
@@ -1018,7 +1021,8 @@ class MultinomialLogitRequest(RequestBase):
         return None
 
     def choose_offer(self, scenario_parameters, simulation_time):
-        """Choose between available MOD offers and external travel modes with a multinomial logit model."""
+        """This method chooses between available MOD offers and external modes with a multinomial logit model.
+        """
         utils = self._compute_external_mode_utilities(simulation_time)
         utils.update(self._compute_pt_utility(scenario_parameters))
         mod_utils = self._compute_mod_offer_utilities()

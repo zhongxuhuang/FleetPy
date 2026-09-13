@@ -12,7 +12,8 @@ LOG = logging.getLogger(__name__)
 
 
 def _parse_mapping(value):
-    """Return a dict from a dict-like scenario value."""
+    """This function returns a dict from a dict-like scenario value.
+    """
     if value is None:
         return {}
     if isinstance(value, dict):
@@ -25,7 +26,8 @@ def _parse_mapping(value):
 
 
 def _normalize_zone_mapping(mapping):
-    """Convert zone keys to ints when possible and values to floats."""
+    """This function converts zone keys to ints when possible and values to floats.
+    """
     normalized = {}
     for zone_id, value in mapping.items():
         try:
@@ -37,7 +39,8 @@ def _normalize_zone_mapping(mapping):
 
 
 def _read_zone_value_file(file_path, value_columns):
-    """Read a zone_id,value CSV into a mapping."""
+    """This function reads a zone_id,value CSV into a mapping.
+    """
     if file_path is None:
         return {}
     df = pd.read_csv(file_path)
@@ -59,7 +62,8 @@ def _get_zone_value(value, zone_id, default=0.0):
 
 
 class RoadPricingPolicy:
-    """Base class for zone-based road pricing policies."""
+    """This is the base class for zone-based road-pricing policies.
+    """
 
     policy_name = "none"
 
@@ -89,7 +93,8 @@ class RoadPricingPolicy:
 
 
 class StaticZoneDistancePricing(RoadPricingPolicy):
-    """Fixed cents-per-meter toll coefficients by zone."""
+    """This policy applies fixed cents-per-meter toll coefficients by zone.
+    """
 
     policy_name = "static"
 
@@ -128,7 +133,7 @@ class StaticZoneDistancePricing(RoadPricingPolicy):
 
 
 class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
-    """MFD-density-responsive cents-per-metre toll coefficients by zone.
+    """This policy applies MFD-density-responsive cents-per-metre toll coefficients by zone.
 
     The coefficient is linear in the density ratio, so it is below the base
     coefficient in uncongested conditions, equals it at critical density, and
@@ -160,7 +165,7 @@ class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
         return sim_time - self.last_update_time >= self.update_interval
 
     def _get_critical_density(self, zone_id):
-        """Return the parabolic-MFD critical density in vehicles per kilometre.
+        """This method returns the parabolic-MFD critical density in vehicles per kilometre.
 
         For ``q(k) = v_free * k - gamma * k**2``, maximum flow occurs at
         ``k_critical = v_free / (2 * gamma)``. ``NetworkZoneSystem`` retains
@@ -266,7 +271,7 @@ class MyopicMFDZoneDistancePricing(RoadPricingPolicy):
 
 
 class ScheduledZoneTariffPricing(RoadPricingPolicy):
-    """PV-only cordon or distance tariffs read from a fixed zone-time schedule.
+    """This policy applies PV-only cordon or distance tariffs from a fixed zone-time schedule.
 
     The CSV fixes tariff bands and values. ``mfd_speed`` reads the routing
     engine's already-computed speed snapshot once per network update; it never
@@ -305,12 +310,13 @@ class ScheduledZoneTariffPricing(RoadPricingPolicy):
         self.active_mfd_speeds_kmh = {}
         self.last_tariff_update_time = None
         self.set_update_interval(scenario_parameters.get(G_RP_TARIFF_UPDATE_INT, 300))
-        # The general route-toll interface is also used for MoD fares.  Clearing
-        # its legacy coefficients makes this new policy PV-only by construction.
+        # the general route-toll interface is also used for MoD fares
+        # clearing its legacy coefficients makes this policy PV-only by construction
         self.zone_system.set_current_toll_coefficients({})
 
     def set_update_interval(self, update_interval):
-        """Set the MFD-speed tariff refresh interval in seconds."""
+        """This method sets the MFD-speed tariff refresh interval in seconds.
+        """
         try:
             update_interval = float(update_interval)
         except (TypeError, ValueError) as exc:
@@ -474,7 +480,8 @@ class ScheduledZoneTariffPricing(RoadPricingPolicy):
         return covered_until >= interval_end
 
     def _validate_coverage(self, by_zone):
-        """Require every selected zone tariff to cover the configured simulation horizon."""
+        """This method requires every selected zone tariff to cover the configured simulation horizon.
+        """
         start_time = self.scenario_parameters.get(G_SIM_START_TIME)
         end_time = self.scenario_parameters.get(G_SIM_END_TIME)
         if start_time is None or end_time is None:
@@ -523,7 +530,8 @@ class ScheduledZoneTariffPricing(RoadPricingPolicy):
 
     @staticmethod
     def _route_zone_segments(zone_system, routing_engine, route):
-        """Return contiguous origin-zone route segments with their TT and length."""
+        """This method returns contiguous origin-zone route segments with their TT and length.
+        """
         segments = []
         for origin, destination in zip(route, route[1:]):
             zone_id = zone_system.get_zone_from_node(origin)
@@ -542,7 +550,8 @@ class ScheduledZoneTariffPricing(RoadPricingPolicy):
         return segments
 
     def get_pv_route_toll_cost(self, routing_engine, sim_time, route):
-        """Quote the fixed scheduled tariff for one PV route, in cent."""
+        """This method returns the fixed scheduled tariff for one PV route, in cent.
+        """
         if not route or len(route) < 2:
             return 0
         total_cent = 0.0
@@ -564,7 +573,8 @@ class ScheduledZoneTariffPricing(RoadPricingPolicy):
         return int(round(total_cent))
 
     def update(self, sim_time, routing_engine):
-        """Write the active scheduled tariffs for audit; no traffic-price update occurs."""
+        """This method writes the active scheduled tariffs for audit; no traffic-price update occurs.
+        """
         if self.tariff_basis == "mfd_speed" and not self._is_tariff_update_time(sim_time):
             return False
         if self.tariff_basis == "mfd_speed":

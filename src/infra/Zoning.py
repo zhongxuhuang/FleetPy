@@ -179,9 +179,9 @@ class ZoneSystem:
         return self.get_zone_from_node(pos[0])
 
     def get_mfd_average_speed(self, zone_id, number_vehicles):
-        """Returns the MFD average speed for a zone.
+        """This method returns the MFD average speed for a zone.
 
-        TODO: implement the zone-specific MFD speed function here. The return value must use the
+        The zone-specific MFD speed function is not implemented here. The return value must use the
         same distance/time units as the network edge data, i.e. edge_distance / travel_time.
         Return None to keep using the original network edge travel times for this zone.
 
@@ -192,7 +192,7 @@ class ZoneSystem:
         :return: average speed in network distance units per second, or None
         :rtype: float | None
         """
-        # TODO: replace this placeholder with the actual MFD equation, e.g.
+        # TODO # replace this placeholder with the actual MFD equation, e.g.
         # speed = f(number_vehicles, zone_capacity, free_flow_speed, jam_density)
         return None
 

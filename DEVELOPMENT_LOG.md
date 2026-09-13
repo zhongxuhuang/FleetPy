@@ -4,6 +4,55 @@ This document records source-level changes, equations, and implementation notes
 for files that require quick future reference. Add a new top-level entry for each
 additional source file.
 
+## `src/` comment and docstring normalization
+
+### FleetPy-local documentation style
+
+- Updated 2026-09-13 +02:00 (Europe/Berlin). Reviewed all branch changes below
+  `src/` against `upstream/main` and normalized comments and docstrings in the
+  21 affected tracked Python files plus the untracked
+  `src/preprocessing/demand/jitter_replicated_demand.py`.
+- Existing module-local conventions are retained: FleetPy methods use the
+  `This method ...` docstring form, standalone preprocessing helpers use
+  `This script/function/class ...`, section separators match their surrounding
+  source file, and ordinary block comments use the neighbouring lowercase
+  short-comment style. Tool directives such as `# noqa: E402` are unchanged.
+- No executable statement, configuration, test, result, CSV, GeoJSON, or QMD
+  file was changed. After removing docstrings from the parsed syntax trees, all
+  21 tracked Python files were AST-identical to `HEAD`; the untracked jitter
+  script also parsed successfully. `git diff --check HEAD -- src` reported no
+  whitespace errors.
+
+## `src/preprocessing/demand/jitter_replicated_demand.py` and `data/demand/mt/matched/Aimsun_Munich_2020/rq_munich_matsim_5x_v2.csv`
+
+### Reproducible time jitter for the fivefold Munich demand
+
+- Added and updated 2026-09-04 +02:00 (Europe/Berlin). The command-line script
+  reads consecutive groups of five identical replicated requests. The first
+  copy keeps its original `rq_time`; the other four receive distinct integer
+  delays sampled uniformly without replacement from 60--300 seconds relative
+  to that original time with default seed `42`. Their delays are assigned in
+  ascending order. The complete output is then globally sorted by `rq_time`
+  and receives contiguous zero-based `request_id` values. All other fields
+  remain unchanged.
+- The implementation validates the input schema, complete five-row groups,
+  identical group payloads, and ascending source times. A bounded heap performs
+  the global time merge without loading the full demand into memory. The target
+  and `.partial` paths are protected against accidental overwrite; explicit
+  `--overwrite` atomically replaces a completed derived output while preserving
+  the existing file if generation fails. `--validate-only` reproduces and
+  compares the full expected output stream without changing either file.
+- Generated `rq_munich_matsim_5x_v2.csv` from `rq_munich_matsim_5x.csv` using
+  group size 5, positive-delay range 60--300 seconds, and seed 42. Validation
+  matched all 1,944,540 output rows from 388,908 source groups exactly. Every
+  group contains one unchanged first copy and four copies with mutually
+  distinct positive delays; the realised positive-delay range is 60--300
+  seconds, the delayed-copy mean is 179.989 seconds, and the mean across all
+  five copies is 143.991 seconds. The source SHA-256 remained
+  `31A8482955249084E32C26655473EE518508F6B7208DEEC1468C47D4AE153601`; the
+  output SHA-256 is
+  `E4CD862B8F77F323C4B953257B5847DC76DCBAABE8646D217B70BE78CFB45027`.
+
 ## `studies/mt/scenarios/mod25/06-10_15-20/scenario_cfg_mt_5x_w2_m25_ex_v1_h_g.csv`
 
 ### Hard-gating activation for the val1 hailing pricing scenarios

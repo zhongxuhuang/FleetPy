@@ -70,14 +70,16 @@ def read_user_output_file(output_dir, evaluation_start_time = None, evaluation_e
 
 
 def weighted_sum(frame, column):
-    """Return a request-representative sum, defaulting historical rows to weight one."""
+    """This function returns a request-representative sum, defaulting historical rows to weight one.
+    """
     values = pd.to_numeric(frame[column], errors="coerce")
     weights = pd.to_numeric(frame[G_RQ_WEIGHT_OUTPUT], errors="raise")
     return (values * weights).sum()
 
 
 def weighted_mean(frame, column):
-    """Return a request-representative mean."""
+    """This function returns a request-representative mean.
+    """
     values = pd.to_numeric(frame[column], errors="coerce")
     valid = values.notna()
     if not valid.any():

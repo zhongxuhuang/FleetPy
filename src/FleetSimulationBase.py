@@ -188,7 +188,7 @@ class FleetSimulationBase:
             raise ValueError(f"{G_RQ_WEIGHT} must be a positive finite number") from exc
         if not np.isfinite(self.request_weight) or self.request_weight <= 0:
             raise ValueError(f"{G_RQ_WEIGHT} must be a positive finite number")
-        # Persist the explicit default in 00_config.json and every request row.
+        # persist the explicit default in 00_config.json and every request row
         self.scenario_parameters[G_RQ_WEIGHT] = self.request_weight
 
         # check whether simulation already has been conducted -> use final_state.csv to check
@@ -812,7 +812,8 @@ class FleetSimulationBase:
             veh_obj.update_route()
 
     def _assign_new_background_routes(self, sim_time, *, since=None):
-        """Assign demand-file background traffic to the network priority queues."""
+        """This method assigns demand-file background traffic to the network priority queues.
+        """
         if not hasattr(self.demand, "get_new_background_trips"):
             return
         background_trips = self.demand.get_new_background_trips(sim_time, since=since)

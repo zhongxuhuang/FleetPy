@@ -87,7 +87,8 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
 
     def _initialize_mod_destination_gating(
             self, operator_attributes, scenario_parameters, zone_system, dir_names):
-        """Validate and initialize optional MFD-based destination gating."""
+        """This method validates and initializes optional MFD-based destination gating.
+        """
         enabled = operator_attributes.get(G_OP_MOD_DEST_GATING, False)
         if type(enabled) is not bool:
             raise ValueError(f"{G_OP_MOD_DEST_GATING} must be True or False.")
@@ -171,7 +172,8 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
         })
 
     def _evaluate_mod_destination_gating(self, prq, sim_time):
-        """Return ``True`` when a new request must be rejected by hard gating."""
+        """This method returns ``True`` when a new request must be rejected by hard gating.
+        """
         if not getattr(self, "mod_destination_gating_enabled", False):
             return False
 
@@ -238,7 +240,8 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
         return state_after
 
     def _flush_mod_destination_gating_records(self):
-        """Append buffered request-level gating decisions to the audit CSV."""
+        """This method appends buffered request-level gating decisions to the audit CSV.
+        """
         if (
             not getattr(self, "mod_destination_gating_enabled", False)
             or not getattr(self, "_mod_destination_gating_records", None)
@@ -258,7 +261,8 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
         self._mod_destination_gating_records = []
 
     def _record_user_request_time(self, sim_time, start_time):
-        """Add one request's computation time to the standard operator output."""
+        """This method adds one request's computation time to the standard operator output.
+        """
         duration = round(time.perf_counter() - start_time, 5)
         previous = self._get_current_dynamic_fleetcontrol_value(sim_time, G_FCTRL_CT_RQU)
         total = duration if previous is None else previous + duration
@@ -435,7 +439,7 @@ class PoolingInsertionHeuristicOnly(FleetControlBase):
         self.pos_veh_dict = {}  # pos -> list_veh
 
     def inform_network_travel_time_update(self, simulation_time: int):
-        """Refresh active routes and committed plans after a network TT update.
+        """This method refreshes active routes and committed plans after a network TT update.
 
         Confirmed requests remain assigned to their current vehicles. The
         refreshed plan can become infeasible under the new travel times; in
