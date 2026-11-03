@@ -193,6 +193,8 @@ class NetworkBasic(NetworkBase):
         # zones without an MFD still need a positive speed for the PV bathtub queue
         # calculate these speeds once from the t=0 edge travel times when building the zone-edge cache
         self._fixed_zone_queue_speeds = {}
+        self._static_mfd_speeds = {}
+        self._static_tt_initialized = False
         self._zone_priority_queue_states = {}
         self._queued_route_trips = {}
         self._pv_route_start_events = []
@@ -208,8 +210,8 @@ class NetworkBasic(NetworkBase):
     def set_network_mode(self, network_mode):
         """This method configures whether zone state updates may overwrite edge travel times.
 
-        Static mode must be selected before the first network update. It keeps
-        the base edge travel times loaded by ``loadNetwork`` and disables both
+        Static mode must be selected before the first network update. It uses
+        MFD free-flow travel times where available and disables both
         explicitly configured and automatically discovered time-dependent TT
         sources.
         """
@@ -228,6 +230,41 @@ class NetworkBasic(NetworkBase):
             self._current_tt_factor = None
             self._tt_infos_from_folder = True
         return self.network_mode
+
+    def initialize_static_travel_times(self):
+        """This method fixes edge and PV queue speeds before the first static routing query.
+
+        Zones with an MFD use its zero-density speed. All other edges retain
+        their loaded base travel time. Backend updates and cache invalidation
+        are completed once, after the zone system has been attached.
+        """
+        if self.network_mode != "static" or getattr(self, "_static_tt_initialized", False):
+            return False
+        if self.zones is None:
+            return False
+        zone_to_edges = self._get_zone_to_edge_cache()
+        self._static_mfd_speeds = {}
+        changed_edges = []
+        for zone_id, edge_infos in zone_to_edges.items():
+            speed = self._get_zone_average_speed_from_mfd(zone_id, 0)
+            if speed is None or speed <= 0:
+                continue
+            self._static_mfd_speeds[zone_id] = speed
+            for origin, destination, distance in edge_infos:
+                travel_time = distance / speed
+                if self._set_edge_tt(origin, destination, travel_time):
+                    changed_edges.append((origin, destination, travel_time))
+        self._fixed_zone_queue_speeds = self._compute_fixed_zone_queue_speeds(zone_to_edges)
+        self._fixed_zone_queue_speeds.update(self._static_mfd_speeds)
+        if changed_edges:
+            self._reset_internal_attributes_after_travel_time_update()
+            self._after_dynamic_edge_tt_update(changed_edges)
+        self._static_tt_initialized = True
+        LOG.info(
+            "static free-flow initialization: MFD zones=%s, changed edges=%s",
+            len(self._static_mfd_speeds), len(changed_edges),
+        )
+        return bool(changed_edges)
 
     def loadNetwork(self, network_name_dir, network_dynamics_file_name=None, scenario_time=None):
         nodes_f = os.path.join(network_name_dir, "base", "nodes.csv")
@@ -299,6 +336,7 @@ class NetworkBasic(NetworkBase):
         new_tt_flag = False
         if update_state:
             if self.network_mode == "static":
+                self.initialize_static_travel_times()
                 self._update_static_network_state(simulation_time)
                 return False
             if self.travel_time_file_infos.get(simulation_time, None) is not None:
@@ -319,7 +357,7 @@ class NetworkBasic(NetworkBase):
                 zone_id,
                 self.current_total_zone_vehicle_counts.get(zone_id, 0),
                 self._fixed_zone_queue_speeds.get(zone_id),
-                "static_base_tt",
+                "static_mfd_free_flow" if zone_id in self._static_mfd_speeds else "static_base_tt",
                 len(edge_infos),
             )
             for zone_id, edge_infos in zone_to_edges.items()
@@ -327,7 +365,7 @@ class NetworkBasic(NetworkBase):
         self._record_zone_speed_snapshot(simulation_time, zone_speed_summary)
         LOG.debug(
             f"static network state update at {simulation_time}: "
-            f"zones={len(zone_to_edges)}; base edge travel times unchanged"
+            f"zones={len(zone_to_edges)}; fixed edge travel times unchanged"
         )
         return False
 
@@ -955,6 +993,10 @@ class NetworkBasic(NetworkBase):
         """
         if zone_id is None or zone_id < 0:
             return None
+        if getattr(self, "network_mode", "dynamic_mfd") == "static":
+            if getattr(self, "_static_tt_initialized", False):
+                return self._static_mfd_speeds.get(zone_id)
+            number_vehicles = 0
         if zone_id in self.zone_mfd_functions:
             return self.zone_mfd_functions[zone_id](number_vehicles)
         # TODO # implement the default MFD speed in the attached ZoneSystem
@@ -966,9 +1008,9 @@ class NetworkBasic(NetworkBase):
     def _get_zone_queue_speed(self, zone_id, number_vehicles):
         """This method returns the speed used to advance a zone-level PV queue.
 
-        MFD zones use their density-dependent speed. Zones without an MFD use
-        their cached t=0 base-edge-TT-equivalent speed, so their PV queue can
-        advance without changing any individual edge travel time.
+        Dynamic MFD zones use their density-dependent speed. Static queues
+        use their initialized fixed speed; zones without an MFD use the
+        base-edge-TT-equivalent speed without changing individual edge times.
         """
         if getattr(self, "network_mode", "dynamic_mfd") != "static":
             avg_speed = self._get_zone_average_speed_from_mfd(zone_id, number_vehicles)

@@ -516,6 +516,16 @@ class ParallelProcess():
         if callable(set_network_mode):
             set_network_mode(self.scenario_parameters.get(G_NETWORK_MODE, "dynamic_mfd"))
 
+        if str(self.scenario_parameters.get(G_NETWORK_MODE, "dynamic_mfd")).strip().lower() == "static":
+            from src.infra.NetworkZoning import NetworkZoneSystem
+            if self.dir_names.get(G_DIR_ZONES) is not None and hasattr(self.routing_engine, "zones"):
+                self.routing_engine.zones = NetworkZoneSystem(
+                    self.dir_names[G_DIR_ZONES], self.scenario_parameters, self.dir_names
+                )
+            initialize_static_tt = getattr(self.routing_engine, "initialize_static_travel_times", None)
+            if callable(initialize_static_tt):
+                initialize_static_tt()
+
         self.new_routing_data_loaded = False    # flag to tell if network changed
 
         self.fo_data = {}   #fo_id -> parameters= (see self.initOp())

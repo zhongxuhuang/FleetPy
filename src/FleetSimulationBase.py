@@ -296,6 +296,9 @@ class FleetSimulationBase:
             set_network_mode(self.scenario_parameters[G_NETWORK_MODE])
         if hasattr(self.routing_engine, "zones"):
             self.routing_engine.zones = self.zones
+        initialize_static_tt = getattr(self.routing_engine, "initialize_static_travel_times", None)
+        if callable(initialize_static_tt):
+            initialize_static_tt()
         self.road_pricing = load_road_pricing_policy(self.zones, self.scenario_parameters, self.dir_names)
         if network_type == "NetworkDynamicNFDClusters":
             self.routing_engine.add_init_data(self.start_time, self.time_step,

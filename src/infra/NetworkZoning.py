@@ -41,10 +41,7 @@ class NetworkZoneSystem(ZoneSystem):
                 f"got {self.network_mode!r}"
             )
         self.mfd_parameters_file = None
-        self.mfd_parameters = (
-            self._load_mfd_parameters(scenario_parameters)
-            if self.network_mode == "dynamic_mfd" else {}
-        )
+        self.mfd_parameters = self._load_mfd_parameters(scenario_parameters)
         self.mfd_exogenous_density_file = None
         self.mfd_exogenous_density_profiles = self._load_mfd_exogenous_density_profiles(
             scenario_parameters
@@ -54,7 +51,7 @@ class NetworkZoneSystem(ZoneSystem):
         self.mfd_network_lengths_km = {}
 
     def _load_mfd_parameters(self, scenario_parameters):
-        """This method loads the configured parabolic MFD parameters for dynamic mode.
+        """This method loads the configured parabolic MFD parameters for both network modes.
 
         The file is resolved relative to the general zone directory and must
         contain ``zone_id``,
@@ -65,7 +62,7 @@ class NetworkZoneSystem(ZoneSystem):
         configured_name = scenario_parameters.get(G_MFD_PARAMETERS_F, "mfd_parameters.csv")
         if configured_name is None or pd.isna(configured_name) or not str(configured_name).strip():
             raise ValueError(
-                f"{G_MFD_PARAMETERS_F} is required when {G_NETWORK_MODE}=dynamic_mfd"
+                f"{G_MFD_PARAMETERS_F} is required when {G_NETWORK_MODE}={self.network_mode}"
             )
         configured_name = str(configured_name).strip()
         mfd_parameters_f = (
@@ -357,11 +354,15 @@ class NetworkZoneSystem(ZoneSystem):
         to density using the assigned zone road length, then the fitted
         relation is evaluated as ``speed = q(k) / k = v - gamma * k``.
         A small positive speed at and beyond jam density keeps edge travel
-        times finite.
+        times finite. Static mode returns the free-flow parameter directly,
+        independent of traffic counts and network length.
         """
         params = self.mfd_parameters.get(zone_id)
         if params is None:
             return None
+
+        if self.network_mode == "static":
+            return params["v"] / 3.6
 
         network_length_km = self.mfd_network_lengths_km.get(zone_id)
         if network_length_km is None:
